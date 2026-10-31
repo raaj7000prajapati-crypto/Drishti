@@ -6,6 +6,15 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.notification import Notification
+from app.repositories.notifications import (
+    get_notification_for_user,
+    list_notifications_for_user,
+    mark_notifications_read_for_user,
+)
+
+
+class NotificationNotFound(Exception):
+    pass
 
 def create_notification(
     db: Session,
@@ -26,6 +35,26 @@ def create_notification(
     db.commit()
     db.refresh(notification)
     return notification
+
+
+def get_user_notifications(db: Session, user_id: int) -> list[Notification]:
+    return list_notifications_for_user(db, user_id)
+
+
+def mark_user_notification_read(
+    db: Session, notification_id: int, user_id: int
+) -> None:
+    notification = get_notification_for_user(db, notification_id, user_id)
+    if notification is None:
+        raise NotificationNotFound
+    notification.is_read = True
+    db.commit()
+
+
+def mark_all_user_notifications_read(db: Session, user_id: int) -> None:
+    mark_notifications_read_for_user(db, user_id)
+    db.commit()
+
 
 def send_email(
     to_email: str,

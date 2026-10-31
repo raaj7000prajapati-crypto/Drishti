@@ -13,8 +13,9 @@ is a prototype and is not ready for production deployment.
 flowchart LR
     Browser[React and Vite frontend] -->|HTTP /api| API[FastAPI routers]
     API --> Services[Application services]
-    API --> ORM[SQLAlchemy models and sessions]
-    Services --> ORM
+    Services --> Repositories[Repositories]
+    Services --> ORM[SQLAlchemy models and sessions]
+    Repositories --> ORM
     ORM --> DB[(SQLite for local development)]
     ORM --> PG[(PostgreSQL in Docker)]
     Services --> Scheduler[In-process APScheduler]
@@ -23,8 +24,10 @@ flowchart LR
     Browser -->|Authenticated download| API
 ```
 
-The routers currently contain some workflow and database logic; the diagram
-shows the major components, not a fully enforced layered architecture.
+Routers handle HTTP concerns and delegate application behavior to services.
+Reusable data access is in repositories; services own workflow orchestration
+and transactions. Some existing services still issue SQLAlchemy operations
+directly, so the repository boundary is not yet universal.
 
 ### Data model
 
@@ -146,8 +149,8 @@ local demonstrations only:
 - Analytics with a short-TTL dashboard aggregate cache, CSV/PDF report routes,
   and JSON health/metrics endpoints
 
-These features have important limitations: some non-case routers still perform
-database work directly; login lockout and dashboard cache state are process-local;
+These features have important limitations: some services still access
+SQLAlchemy directly instead of through repositories; login lockout and dashboard cache state are process-local;
 and the local performance smoke test is not a production capacity estimate. The
 84-pair synthetic evaluation includes TF-IDF, multilingual sentence-embedding,
 and hybrid measurements; it is not a production accuracy estimate. See

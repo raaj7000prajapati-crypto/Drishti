@@ -1,7 +1,5 @@
 import time
-import uuid
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Deque
 
@@ -14,14 +12,21 @@ from app.core.database import get_db
 from app.core.logging import logger
 from app.core.security import (
     create_access_token,
-    create_refresh_token,
     decode_token,
-    get_password_hash,
-    verify_password,
 )
-from app.models.user import RefreshToken, Role, User
+from app.models.user import Role, User
 from app.schemas.user import Token, UserCreate, UserLogin, UserResponse
-from app.services.audit import log_audit
+from app.services.authentication import (
+    DuplicateUserError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    InvalidRefreshTokenError,
+    authenticate_user,
+    create_refresh_session,
+    register_complainant,
+    revoke_refresh_session,
+    rotate_refresh_session,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -103,17 +108,6 @@ def clear_refresh_cookie(response: Response) -> None:
     )
 
 
-def _new_refresh_token(db: Session, user: User) -> str:
-    jti = str(uuid.uuid4())
-    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    token = create_refresh_token(
-        data={"sub": user.email, "role": user.role.value, "id": user.id, "jti": jti},
-        expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-    )
-    db.add(RefreshToken(jti=jti, user_id=user.id, expires_at=expires_at))
-    return token
-
-
 def _user_response(user: User) -> UserResponse:
     return UserResponse(
         id=user.id,
@@ -135,37 +129,14 @@ def register(
     db: Session = Depends(get_db),
 ):
     """Register a new citizen/student/institution complainant."""
-    email = user_in.email.lower().strip()
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
+    try:
+        user = register_complainant(db, user_in, get_client_ip(request))
+    except DuplicateUserError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A user with this email address already exists",
-        )
-
-    new_user = User(
-        email=email,
-        hashed_password=get_password_hash(user_in.password),
-        full_name=user_in.full_name.strip(),
-        phone=user_in.phone.strip() if user_in.phone else None,
-        role=Role.COMPLAINANT,
-        is_active=True,
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    log_audit(
-        db=db,
-        action="USER_REGISTER",
-        entity_type="User",
-        entity_id=str(new_user.id),
-        actor_id=new_user.id,
-        actor_email=new_user.email,
-        ip_address=get_client_ip(request),
-        after_state={"email": new_user.email, "role": new_user.role.value},
-    )
-    return new_user
+        ) from exc
+    return user
 
 
 @router.post("/login", response_model=Token)
@@ -179,37 +150,27 @@ def login(
     client_ip = get_client_ip(request)
     email = login_data.email.lower().strip()
     check_login_rate_limit(client_ip, email)
-    user = db.query(User).filter(User.email == email).first()
-
-    if not user or not verify_password(login_data.password, user.hashed_password):
+    try:
+        user = authenticate_user(db, email, login_data.password)
+    except InvalidCredentialsError as exc:
         record_login_failure(email, client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.is_active:
+        ) from exc
+    except InactiveUserError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is deactivated",
-        )
+        ) from exc
 
     clear_login_failures(email)
     token_data = {"sub": user.email, "role": user.role.value, "id": user.id}
     access_token = create_access_token(data=token_data)
-    refresh_token = _new_refresh_token(db, user)
-    db.commit()
+    refresh_token = create_refresh_session(db, user, client_ip)
     set_refresh_cookie(response, refresh_token)
 
-    log_audit(
-        db=db,
-        action="USER_LOGIN",
-        entity_type="User",
-        entity_id=str(user.id),
-        actor_id=user.id,
-        actor_email=user.email,
-        ip_address=client_ip,
-    )
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -234,27 +195,20 @@ def refresh_token(
             detail="Invalid or expired refresh token",
         )
 
-    token_record = db.query(RefreshToken).filter(RefreshToken.jti == jti).first()
-    user = db.query(User).filter(User.email == payload.get("sub")).first()
-    if (
-        not token_record
-        or token_record.revoked_at is not None
-        or not user
-        or not user.is_active
-        or token_record.user_id != user.id
-    ):
+    try:
+        user, new_refresh_token = rotate_refresh_session(
+            db, jti, payload.get("sub", "")
+        )
+    except InvalidRefreshTokenError as exc:
         clear_refresh_cookie(response)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or revoked refresh token",
-        )
+        ) from exc
 
-    token_record.revoked_at = datetime.now(timezone.utc)
-    new_refresh_token = _new_refresh_token(db, user)
     new_access_token = create_access_token(
         data={"sub": user.email, "role": user.role.value, "id": user.id}
     )
-    db.commit()
     set_refresh_cookie(response, new_refresh_token)
     return {"access_token": new_access_token, "token_type": "bearer"}
 
@@ -270,10 +224,7 @@ def logout(
     payload = decode_token(token, verify_exp=False) if token else {}
     jti = payload.get("jti")
     if payload.get("type") == "refresh" and jti:
-        token_record = db.query(RefreshToken).filter(RefreshToken.jti == jti).first()
-        if token_record and token_record.revoked_at is None:
-            token_record.revoked_at = datetime.now(timezone.utc)
-            db.commit()
+        revoke_refresh_session(db, jti)
     clear_refresh_cookie(response)
     return {"message": "Logged out"}
 

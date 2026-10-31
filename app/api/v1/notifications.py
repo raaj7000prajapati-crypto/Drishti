@@ -4,9 +4,14 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.notification import Notification
 from pydantic import BaseModel
 from datetime import datetime
+from app.services.notification import (
+    NotificationNotFound,
+    get_user_notifications as list_user_notifications_service,
+    mark_all_user_notifications_read,
+    mark_user_notification_read,
+)
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
@@ -27,14 +32,7 @@ def get_user_notifications(
     current_user: User = Depends(require_permission("notification.read"))
 ):
     """Retrieve in-app notifications for authenticated user."""
-    notifications = (
-        db.query(Notification)
-        .filter(Notification.user_id == current_user.id)
-        .order_by(Notification.created_at.desc())
-        .limit(30)
-        .all()
-    )
-    return notifications
+    return list_user_notifications_service(db, current_user.id)
 
 @router.put("/{id}/read")
 def mark_notification_read(
@@ -43,11 +41,12 @@ def mark_notification_read(
     current_user: User = Depends(require_permission("notification.read"))
 ):
     """Mark a notification as read."""
-    n = db.query(Notification).filter(Notification.id == id, Notification.user_id == current_user.id).first()
-    if not n:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    n.is_read = True
-    db.commit()
+    try:
+        mark_user_notification_read(db, id, current_user.id)
+    except NotificationNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail="Notification not found"
+        ) from exc
     return {"message": "Notification marked as read"}
 
 @router.put("/read-all")
@@ -56,6 +55,5 @@ def mark_all_read(
     current_user: User = Depends(require_permission("notification.read"))
 ):
     """Mark all notifications for authenticated user as read."""
-    db.query(Notification).filter(Notification.user_id == current_user.id, Notification.is_read == False).update({"is_read": True})
-    db.commit()
+    mark_all_user_notifications_read(db, current_user.id)
     return {"message": "All notifications marked as read"}
