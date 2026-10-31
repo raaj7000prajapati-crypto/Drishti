@@ -3,13 +3,10 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from './NotificationBell';
 import {
-  ShieldAlert,
   FileText,
   BarChart3,
-  Users,
   History,
   LogOut,
-  LogIn,
   PlusCircle,
   Menu,
   X,
@@ -66,13 +63,14 @@ export default function Navbar() {
           </Link>
 
           {/* Desktop Navigation Links */}
-          <nav className="hidden md:flex items-center space-x-1">
+          <nav aria-label="Primary navigation" className="hidden md:flex items-center space-x-1">
             {isAuthenticated ? (
               <>
                 {user?.role === 'COMPLAINANT' && (
                   <>
                     <Link
                       to="/my-complaints"
+                      aria-current={isActive('/my-complaints') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium transition ${
                         isActive('/my-complaints')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -83,6 +81,7 @@ export default function Navbar() {
                     </Link>
                     <Link
                       to="/file-complaint"
+                      aria-current={isActive('/file-complaint') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/file-complaint')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -98,6 +97,7 @@ export default function Navbar() {
                   <>
                     <Link
                       to="/official/inbox"
+                      aria-current={isActive('/official/inbox') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/official/inbox')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -108,6 +108,7 @@ export default function Navbar() {
                     </Link>
                     <Link
                       to="/complaints"
+                      aria-current={isActive('/complaints') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/complaints')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -123,6 +124,7 @@ export default function Navbar() {
                   <>
                     <Link
                       to="/admin/dashboard"
+                      aria-current={isActive('/admin/dashboard') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/admin/dashboard')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -133,6 +135,7 @@ export default function Navbar() {
                     </Link>
                     <Link
                       to="/complaints"
+                      aria-current={isActive('/complaints') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/complaints')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -143,6 +146,7 @@ export default function Navbar() {
                     </Link>
                     <Link
                       to="/admin/manage"
+                      aria-current={isActive('/admin/manage') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/admin/manage')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -153,6 +157,7 @@ export default function Navbar() {
                     </Link>
                     <Link
                       to="/admin/audit"
+                      aria-current={isActive('/admin/audit') ? 'page' : undefined}
                       className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-1.5 transition ${
                         isActive('/admin/audit')
                           ? 'bg-amber-500 text-slate-950 font-bold'
@@ -205,8 +210,10 @@ export default function Navbar() {
                     </p>
                   </div>
                   <button
+                    type="button"
                     onClick={handleLogout}
                     title="Logout"
+                    aria-label="Log out"
                     className="p-1.5 text-slate-400 hover:text-red-400 rounded-md hover:bg-slate-800 transition"
                   >
                     <LogOut className="w-4 h-4" />
@@ -235,8 +242,12 @@ export default function Navbar() {
           <div className="flex md:hidden items-center space-x-2">
             {isAuthenticated && <NotificationBell />}
             <button
+              type="button"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
               className="p-2 text-slate-400 hover:text-white focus:outline-none"
+              aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-navigation"
             >
               {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
@@ -246,7 +257,11 @@ export default function Navbar() {
 
       {/* Mobile menu dropdown */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-slate-900 border-b border-slate-800 px-4 pt-2 pb-4 space-y-1">
+        <nav
+          id="mobile-navigation"
+          aria-label="Mobile navigation"
+          className="md:hidden bg-slate-900 border-b border-slate-800 px-4 pt-2 pb-4 space-y-1"
+        >
           {isAuthenticated ? (
             <>
               <div className="pb-2 border-b border-slate-800 mb-2">
@@ -363,7 +378,7 @@ export default function Navbar() {
               </Link>
             </>
           )}
-        </div>
+        </nav>
       )}
     </header>
   );

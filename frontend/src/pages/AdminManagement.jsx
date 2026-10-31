@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { adminAPI } from '../services/api';
+import { PageState } from '../components/ui';
 import {
   Users,
   Building2,
@@ -10,8 +11,6 @@ import {
   Edit2,
   Check,
   X,
-  ShieldCheck,
-  Search,
   Sparkles
 } from 'lucide-react';
 
@@ -29,6 +28,7 @@ export default function AdminManagement() {
     low_threshold: 0.3,
   });
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   // Forms
   const [showAddRuleModal, setShowAddRuleModal] = useState(false);
@@ -49,6 +49,7 @@ export default function AdminManagement() {
 
   const loadData = async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const [uRes, bRes, rRes, sRes, tRes] = await Promise.all([
         adminAPI.getUsers(),
@@ -68,6 +69,7 @@ export default function AdminManagement() {
       }
     } catch (err) {
       console.error('Error loading admin governance data:', err);
+      setLoadError(err.response?.data?.detail || 'Governance settings could not be loaded.');
     } finally {
       setLoading(false);
     }
@@ -154,6 +156,23 @@ export default function AdminManagement() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
+      {loading && users.length === 0 && bureaus.length === 0 && (
+        <PageState
+          type="loading"
+          title="Loading governance settings"
+          className="min-h-48 rounded-2xl border border-slate-200 bg-white"
+        />
+      )}
+      {loadError && (
+        <PageState
+          type="error"
+          title="Governance settings unavailable"
+          description={loadError}
+          actionLabel="Retry"
+          onAction={loadData}
+          className="rounded-2xl border border-slate-200 bg-white"
+        />
+      )}
       {/* Page Header */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { complaintsAPI } from '../services/api';
+import { PageState, StatusBadge } from '../components/ui';
 import {
   FileText,
   Clock,
@@ -9,19 +10,9 @@ import {
   AlertCircle,
   PlusCircle,
   Search,
-  ExternalLink,
   ChevronRight,
   Filter
 } from 'lucide-react';
-
-const STATUS_BADGE_CLASSES = {
-  New: 'bg-blue-100 text-blue-800 border-blue-200',
-  Assigned: 'bg-purple-100 text-purple-800 border-purple-200',
-  'In Progress': 'bg-amber-100 text-amber-800 border-amber-200',
-  'Awaiting Info': 'bg-cyan-100 text-cyan-800 border-cyan-200 animate-pulse',
-  Overdue: 'bg-red-100 text-red-800 border-red-200',
-  Closed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-};
 
 const PRIORITY_BADGE_CLASSES = {
   Low: 'text-slate-600 bg-slate-100',
@@ -34,11 +25,13 @@ export default function ComplainantDashboard() {
   const { user } = useAuth();
   const [complaints, setComplaints] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
 
   const fetchComplaints = async () => {
     setLoading(true);
+    setError('');
     try {
       const res = await complaintsAPI.list({
         search: search || undefined,
@@ -47,6 +40,7 @@ export default function ComplainantDashboard() {
       setComplaints(res.data);
     } catch (err) {
       console.error('Error fetching complaints:', err);
+      setError(err.response?.data?.detail || 'Could not load your grievances.');
     } finally {
       setLoading(false);
     }
@@ -158,9 +152,15 @@ export default function ComplainantDashboard() {
         {/* Complaints Table */}
         <div className="overflow-x-auto">
           {loading ? (
-            <div className="p-12 text-center text-xs text-slate-500">
-              Loading your grievances...
-            </div>
+            <PageState type="loading" title="Loading your grievances" />
+          ) : error ? (
+            <PageState
+              type="error"
+              title="Your grievances could not be loaded"
+              description={error}
+              actionLabel="Retry"
+              onAction={fetchComplaints}
+            />
           ) : complaints.length === 0 ? (
             <div className="p-12 text-center space-y-3">
               <FileText className="w-12 h-12 text-slate-300 mx-auto" />
@@ -215,13 +215,7 @@ export default function ComplainantDashboard() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4">
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
-                          STATUS_BADGE_CLASSES[c.status] || 'bg-slate-100 text-slate-800'
-                        }`}
-                      >
-                        {c.status}
-                      </span>
+                      <StatusBadge status={c.status} />
                     </td>
                     <td className="py-3.5 px-4 text-slate-600 text-[11px]">
                       {c.sla_due_at

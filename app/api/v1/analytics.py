@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, case, or_
 from app.core.database import get_db
 from app.core.permissions import require_permission
@@ -13,8 +13,11 @@ from app.schemas.analytics import (
     SimilarityBucketStat, SystemImpactMetrics,
     PendingDelayedComplaint, DashboardStatsResponse
 )
+from app.services.dashboard_cache import DashboardStatsCache
+from app.core.config import settings
 
 router = APIRouter(prefix="/analytics", tags=["Analytics & Metrics"])
+dashboard_cache = DashboardStatsCache(settings.DASHBOARD_CACHE_TTL_SECONDS)
 
 STATUS_COLORS = {
     "New": "#3B82F6",         # Blue
@@ -41,6 +44,36 @@ def get_dashboard_analytics(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("analytics.read"))
 ):
+    cache_key = (
+        current_user.role.value,
+        current_user.id,
+        current_user.bureau_id,
+        bureau_id,
+        priority,
+        status,
+        date_range_days,
+    )
+    return dashboard_cache.get_or_compute(
+        cache_key,
+        lambda: _build_dashboard_analytics(
+            bureau_id,
+            priority,
+            status,
+            date_range_days,
+            db,
+            current_user,
+        ),
+    )
+
+
+def _build_dashboard_analytics(
+    bureau_id: Optional[int],
+    priority: Optional[str],
+    status: Optional[str],
+    date_range_days: int,
+    db: Session,
+    current_user: User,
+):
     """
     Returns live aggregated metrics and KPI statistics computed from the database.
     Supports filtering by bureau, priority, status and timeframe.
@@ -49,7 +82,14 @@ def get_dashboard_analytics(
     start_date = now - timedelta(days=date_range_days)
 
     # Base complaint filter
-    query = db.query(Complaint).filter(Complaint.created_at >= start_date)
+    query = (
+        db.query(Complaint)
+        .options(
+            joinedload(Complaint.bureau),
+            joinedload(Complaint.assigned_official),
+        )
+        .filter(Complaint.created_at >= start_date)
+    )
 
     # Role restriction: if Official, restrict to their bureau unless Admin
     if current_user.role == Role.COMPLAINANT:
@@ -187,7 +227,11 @@ def get_dashboard_analytics(
             diff = (_as_utc(c.closed_at) - _as_utc(c.created_at)).total_seconds() / 86400.0
             resolution_durations.append(max(0.1, diff))
 
-    avg_resolution_days = round(sum(resolution_durations) / len(resolution_durations), 1) if resolution_durations else 4.2
+    avg_resolution_days = (
+        round(sum(resolution_durations) / len(resolution_durations), 1)
+        if resolution_durations
+        else None
+    )
     overdue_pct = round((total_overdue / total_count * 100), 1) if total_count > 0 else 0.0
     sla_compliance = round(max(0.0, 100.0 - overdue_pct), 1)
     
@@ -237,7 +281,7 @@ def get_dashboard_analytics(
             days_open=days_open
         ))
 
-    return DashboardStatsResponse(
+    response = DashboardStatsResponse(
         impact_metrics=impact_metrics,
         cases_by_department=dept_stats,
         status_distribution=status_distribution,
@@ -246,3 +290,4 @@ def get_dashboard_analytics(
         similarity_distribution=similarity_distribution,
         pending_delayed_flags=pending_flags
     )
+    return response

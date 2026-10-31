@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     SIMILARITY_ENGLISH_MODEL: str = "all-MiniLM-L6-v2"
     SIMILARITY_MULTILINGUAL_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
     SIMILARITY_EMBEDDING_CACHE_VERSION: str = "1"
+
+    # Dashboard aggregate cache
+    DASHBOARD_CACHE_TTL_SECONDS: int = Field(default=10, ge=1, le=60)
     
     # SLA Configurations (in days)
     SLA_URGENT_DAYS: int = 1

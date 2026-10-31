@@ -1,39 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { complaintsAPI, officialsAPI } from '../services/api';
+import CaseTimeline from '../components/CaseTimeline';
+import { PageState, StatusBadge } from '../components/ui';
 import {
   FileText,
-  Clock,
-  Calendar,
-  Building,
-  User,
   CheckCircle2,
-  AlertTriangle,
   Upload,
   MessageSquare,
   Sparkles,
-  Link2,
   ThumbsUp,
   ThumbsDown,
   Lock,
   Download,
   Send,
   Star,
-  Check,
-  X,
   FileCheck2,
   ArrowLeft
 } from 'lucide-react';
-
-const STATUS_BADGE_CLASSES = {
-  New: 'bg-blue-100 text-blue-800 border-blue-300',
-  Assigned: 'bg-purple-100 text-purple-800 border-purple-300',
-  'In Progress': 'bg-amber-100 text-amber-800 border-amber-300',
-  'Awaiting Info': 'bg-cyan-100 text-cyan-800 border-cyan-300 animate-pulse',
-  Overdue: 'bg-red-100 text-red-800 border-red-300',
-  Closed: 'bg-emerald-100 text-emerald-800 border-emerald-300',
-};
 
 const BUCKET_COLORS = {
   High: 'bg-red-100 text-red-800 border-red-200',
@@ -76,6 +61,7 @@ export default function ComplaintDetail() {
   const [submittingAnnotation, setSubmittingAnnotation] = useState(false);
 
   const fetchComplaint = async () => {
+    setError('');
     try {
       const res = await complaintsAPI.get(id);
       setComplaint(res.data);
@@ -211,24 +197,25 @@ export default function ComplaintDetail() {
 
   if (loading) {
     return (
-      <div className="max-w-5xl mx-auto py-16 px-4 text-center text-xs text-slate-500">
-        Loading case data and correlation index...
-      </div>
+      <PageState
+        type="loading"
+        title="Loading case details"
+        description="Retrieving the case record, timeline, and related-case information."
+        className="min-h-64"
+      />
     );
   }
 
   if (error || !complaint) {
     return (
-      <div className="max-w-3xl mx-auto py-16 px-4 text-center space-y-4">
-        <AlertTriangle className="w-12 h-12 text-red-500 mx-auto" />
-        <h2 className="text-lg font-bold text-slate-900">{error || 'Grievance not found'}</h2>
-        <Link
-          to="/"
-          className="inline-flex items-center gap-2 text-xs font-semibold text-amber-600 underline"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" /> Return to Home
-        </Link>
-      </div>
+      <PageState
+        type="error"
+        title={error || 'Grievance not found'}
+        description="Check the case link and try loading the record again."
+        actionLabel="Retry"
+        onAction={fetchComplaint}
+        className="min-h-64"
+      />
     );
   }
 
@@ -262,13 +249,7 @@ export default function ComplaintDetail() {
               <span className="font-mono text-lg font-black text-amber-600">
                 {complaint.receipt_id}
               </span>
-              <span
-                className={`px-3 py-0.5 rounded-full text-xs font-bold border ${
-                  STATUS_BADGE_CLASSES[complaint.status] || ''
-                }`}
-              >
-                {complaint.status}
-              </span>
+              <StatusBadge status={complaint.status} />
               {complaint.is_overdue && (
                 <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-600 text-white animate-pulse">
                   SLA OVERDUE
@@ -403,41 +384,7 @@ export default function ComplaintDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left Column (2 Cols): Visual Timeline */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Active Visual Timeline */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-amber-600" /> Live Lifecycle Timeline
-            </h3>
-
-            <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
-              {complaint.events.map((ev, idx) => (
-                <div key={ev.id} className="relative">
-                  <div className="absolute -left-6 top-1 w-3.5 h-3.5 rounded-full bg-amber-500 border-2 border-white shadow"></div>
-                  <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-bold text-xs text-slate-900">{ev.title}</p>
-                      <span className="text-[10px] text-slate-400">
-                        {new Date(ev.created_at).toLocaleString([], {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </span>
-                    </div>
-                    {ev.description && (
-                      <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                        {ev.description}
-                      </p>
-                    )}
-                    <p className="text-[10px] text-slate-400 mt-1.5 italic">
-                      Action by: {ev.actor_name || 'System Engine'}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <CaseTimeline events={complaint.events} />
 
           {/* Citizen Clarifications Section */}
           {complaint.information_requests && complaint.information_requests.length > 0 && (

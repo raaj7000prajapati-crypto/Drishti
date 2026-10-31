@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, Check, ExternalLink } from 'lucide-react';
+import { Bell, Check } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { notificationsAPI } from '../services/api';
+import { PageState } from './ui';
 
 export default function NotificationBell() {
   const [notifications, setNotifications] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
 
@@ -16,8 +19,12 @@ export default function NotificationBell() {
       setNotifications(res.data);
       const unread = res.data.filter((n) => !n.is_read).length;
       setUnreadCount(unread);
+      setError('');
     } catch (err) {
       console.error('Error fetching notifications:', err);
+      setError('Notifications could not be loaded.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -25,6 +32,14 @@ export default function NotificationBell() {
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 15000); // Poll every 15s
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
   }, []);
 
   useEffect(() => {
@@ -50,6 +65,7 @@ export default function NotificationBell() {
       }
     } catch (err) {
       console.error(err);
+      setError('Could not update this notification. Please try again.');
     }
   };
 
@@ -60,15 +76,20 @@ export default function NotificationBell() {
       setUnreadCount(0);
     } catch (err) {
       console.error(err);
+      setError('Could not mark notifications as read. Please try again.');
     }
   };
 
   return (
     <div className="relative" ref={dropdownRef}>
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className="relative p-2 text-slate-300 hover:text-white rounded-full hover:bg-slate-800 transition"
-        title="Notifications"
+        title={`${unreadCount} unread notifications`}
+        aria-label={`Notifications, ${unreadCount} unread`}
+        aria-expanded={isOpen}
+        aria-controls="notification-menu"
       >
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
@@ -79,7 +100,11 @@ export default function NotificationBell() {
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-lg shadow-xl border border-slate-200 z-50 overflow-hidden">
+        <section
+          id="notification-menu"
+          aria-label="Notifications"
+          className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-lg shadow-xl border border-slate-200 z-50 overflow-hidden"
+        >
           <div className="flex items-center justify-between px-4 py-3 bg-slate-900 text-white">
             <div className="flex items-center space-x-2">
               <Bell className="w-4 h-4 text-amber-400" />
@@ -92,6 +117,7 @@ export default function NotificationBell() {
             </div>
             {unreadCount > 0 && (
               <button
+                type="button"
                 onClick={handleMarkAllRead}
                 className="text-xs text-amber-400 hover:text-amber-300 underline flex items-center gap-1"
               >
@@ -100,17 +126,37 @@ export default function NotificationBell() {
             )}
           </div>
 
-          <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
-            {notifications.length === 0 ? (
-              <div className="p-6 text-center text-slate-500 text-sm">
-                No notifications right now
-              </div>
+          <div className="max-h-80 overflow-y-auto divide-y divide-slate-100" aria-live="polite">
+            {loading ? (
+              <PageState
+                type="loading"
+                title="Loading notifications"
+                className="p-6"
+              />
+            ) : error ? (
+              <PageState
+                type="error"
+                title="Notifications unavailable"
+                description={error}
+                actionLabel="Retry"
+                onAction={fetchNotifications}
+                className="p-6"
+              />
+            ) : notifications.length === 0 ? (
+              <PageState
+                type="empty"
+                title="You're all caught up"
+                description="New case updates will appear here."
+                className="p-6"
+              />
             ) : (
               notifications.map((n) => (
-                <div
+                <button
+                  type="button"
                   key={n.id}
                   onClick={() => handleMarkRead(n.id, n.link)}
-                  className={`p-3 text-left transition cursor-pointer hover:bg-slate-50 ${
+                  aria-label={`${n.is_read ? 'Open' : 'Mark read and open'} notification: ${n.title}`}
+                  className={`block w-full p-3 text-left transition hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-amber-500 ${
                     !n.is_read ? 'bg-amber-50/50 font-medium' : ''
                   }`}
                 >
@@ -118,21 +164,21 @@ export default function NotificationBell() {
                     <p className={`text-xs text-slate-900 ${!n.is_read ? 'font-semibold' : ''}`}>
                       {n.title}
                     </p>
-                    <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                    <time className="text-[10px] text-slate-500 whitespace-nowrap" dateTime={n.created_at}>
                       {new Date(n.created_at).toLocaleDateString([], {
                         month: 'short',
                         day: 'numeric',
                       })}
-                    </span>
+                    </time>
                   </div>
                   <p className="text-xs text-slate-600 mt-1 line-clamp-2">
                     {n.message}
                   </p>
-                </div>
+                </button>
               ))
             )}
           </div>
-        </div>
+        </section>
       )}
     </div>
   );

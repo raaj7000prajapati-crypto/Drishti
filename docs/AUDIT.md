@@ -1,8 +1,8 @@
 # Repository Audit
 
-This audit records the implementation present before the planned architecture,
-security, scalability, and UX phases. Statuses describe observable code, not
-roadmap intent.
+This audit summarizes the implementation after Phases A-D. Statuses describe
+observable code, not roadmap intent; the Phase 0 section below preserves the
+original findings for historical context.
 
 | Area | Status | Evidence and gap |
 |---|---|---|
@@ -21,10 +21,10 @@ roadmap intent.
 | Database migrations | Done | Alembic has a generated baseline for current metadata, and the backend upgrades before seeding. The initial migration also creates newly modelled tables on databases previously bootstrapped with `create_all`; no tables or data are dropped. |
 | Hybrid similarity and explainability | Done | Related-case links store a weighted hybrid score, configurable bucket, shared keywords, and exact shared institution/category/location metadata. The case detail panel shows the score and reasons only when the caller can see both cases. Admins can update bucket thresholds through the API and admin UI; updates are audit logged. |
 | Evaluation quality | Partial | `ml/dataset.csv` has 84 synthetic labelled pairs, including Hindi, Hindi-English, and Hinglish examples. `ml/evaluate.py` computes real precision/recall/F1 and confusion matrices. In this environment the multilingual sentence model could not load, so sentence-embedding and hybrid metrics are explicitly skipped; only measured TF-IDF results are published in `ml/results.md`. The synthetic dataset is not a production accuracy estimate. |
-| Security hardening | Partial | Access tokens are short-lived PyJWT tokens; refresh tokens rotate and are revoked server-side through an httpOnly SameSite cookie. Uploads use random storage names, extension/size/signature validation, and authenticated case-scoped downloads; public static serving was removed. A role matrix/object checks, login lockout, production secret guard, security headers, environment-driven CORS, and hash-chain verification are implemented. Login throttling is in-process and not distributed, and exhaustive route-role coverage remains. |
-| Scalability | Missing | Some complaint listing is offset-paginated. Admin lists and several data paths are unbounded; correlation and SLA work run in-process, and there is no cache or load-test report. |
-| UI and accessibility | Partial | Role-specific pages, case details, charts, and notifications exist. The admin dashboard currently raises an error with the seeded SQLite data; loading/error states, responsive/accessibility coverage, and a consistent reusable design system need further verification. |
-| CI and end-to-end coverage | Missing | A small pytest suite exists and passes locally. No CI workflow, browser end-to-end suite, or coverage report is present. |
+| Security hardening | Partial | Access tokens are short-lived PyJWT tokens; refresh tokens rotate and are revoked server-side through an httpOnly SameSite cookie. Uploads use random storage names, extension/size/signature validation, and authenticated case-scoped downloads; public static serving was removed. The role matrix/object checks, login lockout, production secret guard, security headers, environment-driven CORS, and hash-chain verification are implemented. Login throttling is in-process and not distributed, and exhaustive route-role coverage remains. |
+| Scalability | Partial | Dashboard aggregates use a configurable 1-60 second, process-local TTL cache with per-key miss coalescing. A 100-user/5,000-case local Locust run is recorded in `docs/PERFORMANCE.md`; it is a localhost SQLite smoke test, not a production capacity claim. Other lists remain offset-paginated or unbounded, and correlation/SLA work remains in-process. |
+| UI and accessibility | Partial | Shared loading/empty/error primitives, role-aware navigation, accessible notification controls, and a reusable case timeline are implemented. Screenshots from the running app are checked in under `docs/screenshots/`. Keyboard/screen-reader behavior and all role workflows do not yet have automated browser coverage. |
+| CI and end-to-end coverage | Partial | GitHub Actions runs pytest, pip-audit, frontend lint/build, and npm audit. The test suite covers core authorization and workflow cases, but there is no browser end-to-end suite or coverage threshold. |
 
 ## Phase 0 findings
 
@@ -84,5 +84,25 @@ roadmap intent.
   confusion matrices. The current report omits sentence-model and hybrid
   metrics because `sentence-transformers` is unavailable in the validation
   environment; this remains a limitation until measured with a loadable model.
-- Phase C does not include load testing, dashboard caching, screenshot capture,
-  or the remaining UI/CI work; these remain for Phase D.
+- At Phase C completion, load testing, dashboard caching, screenshot capture,
+  and the remaining UI/CI work were outstanding; Phase D progress and limits
+  are recorded below.
+
+## Phase D implementation notes
+
+- Analytics responses are cached for `DASHBOARD_CACHE_TTL_SECONDS` (default
+  10; permitted range 1-60). Keys include the caller identity and query filters,
+  and concurrent misses for one key share a computation. The cache is in-memory
+  per process and expires without explicit write invalidation.
+- `scripts/performance/seed_5000.py` refuses non-SQLite databases and requires
+  an explicitly opted-in database filename containing `perf`. The Locust run
+  exercises the dashboard and 50-row complaint list; measured results and
+  environment limitations are in `docs/PERFORMANCE.md`.
+- The React UI now has reusable page-state/status components, role-specific
+  mobile and desktop navigation, notification loading/error states, and a
+  dedicated case timeline component. Two screenshots were captured from the
+  running Vite app using synthetic demo data.
+- The CI workflow is configured but has not been executed by GitHub Actions in
+  this local session. Local pytest, lint/build, and dependency audits passed;
+  oxlint continues to report pre-existing React-effect warnings in several
+  existing pages.

@@ -29,7 +29,7 @@ class SimilarityBucketStat(BaseModel):
     percentage: float
 
 class SystemImpactMetrics(BaseModel):
-    avg_resolution_days: float
+    avg_resolution_days: Optional[float]
     overdue_percentage: float
     duplicates_intercepted: int
     sla_compliance_rate: float

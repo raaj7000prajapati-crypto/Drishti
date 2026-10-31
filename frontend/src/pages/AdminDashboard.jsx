@@ -1,32 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
 import { analyticsAPI, adminAPI } from '../services/api';
+import { PageState } from '../components/ui';
 import {
   BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
   XAxis, YAxis, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import {
   BarChart3,
-  Download,
   Filter,
   AlertTriangle,
   Clock,
   Sparkles,
-  ShieldCheck,
   CheckCircle2,
   FileSpreadsheet,
   FileText,
-  Calendar,
-  Building2,
   ChevronRight
 } from 'lucide-react';
 
 export default function AdminDashboard() {
-  const { user } = useAuth();
   const [stats, setStats] = useState(null);
   const [bureaus, setBureaus] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   // Filters
   const [bureauId, setBureauId] = useState('');
@@ -48,6 +44,7 @@ export default function AdminDashboard() {
 
   const fetchAnalytics = async () => {
     setLoading(true);
+    setError('');
     try {
       const res = await analyticsAPI.getDashboardStats({
         bureau_id: bureauId || undefined,
@@ -58,6 +55,7 @@ export default function AdminDashboard() {
       setStats(res.data);
     } catch (err) {
       console.error('Error fetching analytics:', err);
+      setError(err.response?.data?.detail || 'Dashboard analytics could not be loaded.');
     } finally {
       setLoading(false);
     }
@@ -116,9 +114,25 @@ export default function AdminDashboard() {
 
   if (loading && !stats) {
     return (
-      <div className="max-w-7xl mx-auto py-16 px-4 text-center text-xs text-slate-500">
-        Aggregating live analytics from grievance database...
-      </div>
+      <PageState
+        type="loading"
+        title="Loading dashboard"
+        description="Aggregating the latest case metrics."
+        className="min-h-64"
+      />
+    );
+  }
+
+  if (error && !stats) {
+    return (
+      <PageState
+        type="error"
+        title="Dashboard unavailable"
+        description={error}
+        actionLabel="Retry"
+        onAction={fetchAnalytics}
+        className="min-h-64"
+      />
     );
   }
 
@@ -127,12 +141,10 @@ export default function AdminDashboard() {
     cases_by_department,
     status_distribution,
     timeline_last_6_months,
-    role_breakdown,
     similarity_distribution,
     pending_delayed_flags,
   } = stats || {};
 
-  const ROLE_COLORS = ['#3B82F6', '#8B5CF6', '#F59E0B'];
   const BUCKET_COLORS = {
     High: '#EF4444',
     Medium: '#F59E0B',
@@ -143,6 +155,21 @@ export default function AdminDashboard() {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
       {/* Top Header & Export Controls */}
+      {error && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-4 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800"
+        >
+          <span>{error} Showing the last loaded data.</span>
+          <button
+            type="button"
+            onClick={fetchAnalytics}
+            className="font-semibold underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <span className="text-xs font-semibold text-amber-600 uppercase tracking-widest flex items-center gap-1.5">
@@ -240,7 +267,7 @@ export default function AdminDashboard() {
             <Clock className="w-3.5 h-3.5 text-blue-600" /> Avg Resolution Time
           </p>
           <p className="text-3xl font-black text-slate-900 mt-2">
-            {impact_metrics?.avg_resolution_days || 4.2} <span className="text-base font-normal text-slate-500">days</span>
+            {impact_metrics?.avg_resolution_days ?? '—'} <span className="text-base font-normal text-slate-500">days</span>
           </p>
           <p className="text-[11px] text-emerald-600 font-medium mt-1">
             Target SLA compliance maintained
@@ -264,7 +291,7 @@ export default function AdminDashboard() {
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> SLA Compliance
           </p>
           <p className="text-3xl font-black text-emerald-600 mt-2">
-            {impact_metrics?.sla_compliance_rate || 95}%
+            {impact_metrics?.sla_compliance_rate ?? 0}%
           </p>
           <p className="text-[11px] text-slate-500 mt-1">
             {impact_metrics?.total_resolved || 0} resolved on schedule

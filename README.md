@@ -140,14 +140,25 @@ local demonstrations only:
   supported SQLite and PostgreSQL deployments, with a SHA-256 hash chain and
   admin verification endpoint
 - Admin user, bureau, routing-rule, and SLA configuration operations
-- Analytics, CSV/PDF report routes, and JSON health/metrics endpoints
+- Analytics with a short-TTL dashboard aggregate cache, CSV/PDF report routes,
+  and JSON health/metrics endpoints
 
 These features have important limitations: some non-case routers still perform
 database work directly; sentence-embedding evaluation is skipped when the model
-cannot load; login lockout state is in-process; and production deployment and
-performance still need further hardening. See [docs/AUDIT.md](./docs/AUDIT.md)
-and [ml/results.md](./ml/results.md) for the measured evaluation and skipped
-model details.
+cannot load; login lockout and dashboard cache state are process-local; and the
+local performance smoke test is not a production capacity estimate. See
+[docs/AUDIT.md](./docs/AUDIT.md), [docs/PERFORMANCE.md](./docs/PERFORMANCE.md),
+and [ml/results.md](./ml/results.md) for current audit status, measured load
+results, and skipped model metrics.
+
+## Screenshots
+
+These are real screenshots captured from the running local app with synthetic
+demo data; they are illustrative, not production evidence.
+
+![Drishti public portal](./docs/screenshots/public-portal.png)
+
+![Administrator analytics dashboard](./docs/screenshots/admin-dashboard.png)
 
 ## API overview
 
@@ -160,7 +171,7 @@ The API is versioned under `/api/v1`. Interactive documentation is served at
 | Complaints | `/complaints/`, `/complaints/check-duplicates`, `/complaints/{id}` |
 | Complaint follow-up | `/complaints/{id}/info-respond`, `/complaints/{id}/feedback` |
 | Official operations | `/officials/cases/{id}/status`, `/request-info`, `/annotate`, `/determination` |
-| Admin | `/admin/users`, `/admin/bureaus`, `/admin/rules`, `/admin/sla`, `/admin/similarity-thresholds`, `/admin/audit-logs` |
+| Admin | `/admin/users`, `/admin/bureaus`, `/admin/rules`, `/admin/sla`, `/admin/similarity-thresholds`, `/admin/audit-logs`, `/admin/audit-logs/verify` |
 | Analytics and reports | `/analytics/dashboard`, `/reports/export/csv`, `/reports/export/pdf` |
 | Notifications | `/notifications/`, `/notifications/{id}/read` |
 
@@ -182,13 +193,18 @@ Frontend checks:
 Set-Location frontend
 npm run lint
 npm run build
+npm audit --audit-level=high
 ```
 
-The pytest suite includes role-denial, object-authorization, refresh-token,
-upload-validation, security-header, and audit-integrity tests, but does not yet
-provide complete workflow, browser, or performance coverage. ML evaluation
-still requires the Phase C correction before any reported model metrics should
-be treated as measured performance.
+The GitHub Actions workflow runs the backend pytest suite and pip-audit, plus
+frontend lint, production build, and npm audit. The pytest suite includes
+role-denial, object-authorization, refresh-token, upload-validation,
+security-header, audit-integrity, and workflow tests. There is no automated
+browser end-to-end suite. The Locust report in
+[docs/PERFORMANCE.md](./docs/PERFORMANCE.md) is a measured local load-test
+smoke test, not production capacity validation. The synthetic ML evaluation
+reports real TF-IDF metrics but skips sentence-embedding and hybrid metrics
+when the configured model cannot load; see [ml/results.md](./ml/results.md).
 
 ## Security notes
 
@@ -201,8 +217,3 @@ configuration. Refresh tokens are stored in an httpOnly cookie and rotated
 server-side; uploaded files are served only through authenticated,
 complaint-authorized endpoints. Login lockout currently uses process memory
 and is not shared across multiple workers or restarts.
-
-## Screenshots
-
-No screenshots are currently checked into the repository. Do not interpret
-this section as evidence of a complete or production-ready interface.

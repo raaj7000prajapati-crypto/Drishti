@@ -2,27 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { complaintsAPI } from '../services/api';
+import { PageState, StatusBadge } from '../components/ui';
 import {
   Inbox,
   Clock,
   AlertTriangle,
-  CheckCircle2,
   Filter,
   Search,
-  ExternalLink,
   ChevronRight,
-  ShieldAlert,
   Building2
 } from 'lucide-react';
-
-const STATUS_BADGE_CLASSES = {
-  New: 'bg-blue-100 text-blue-800 border-blue-200',
-  Assigned: 'bg-purple-100 text-purple-800 border-purple-200',
-  'In Progress': 'bg-amber-100 text-amber-800 border-amber-200',
-  'Awaiting Info': 'bg-cyan-100 text-cyan-800 border-cyan-200 animate-pulse',
-  Overdue: 'bg-red-100 text-red-800 border-red-200 font-bold',
-  Closed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-};
 
 const PRIORITY_BADGE_CLASSES = {
   Low: 'text-slate-600 bg-slate-100',
@@ -35,12 +24,14 @@ export default function OfficialInbox() {
   const { user } = useAuth();
   const [complaints, setComplaints] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [priorityFilter, setPriorityFilter] = useState('All');
 
   const fetchComplaints = async () => {
     setLoading(true);
+    setError('');
     try {
       const res = await complaintsAPI.list({
         search: search || undefined,
@@ -50,6 +41,7 @@ export default function OfficialInbox() {
       setComplaints(res.data);
     } catch (err) {
       console.error('Error fetching bureau complaints:', err);
+      setError(err.response?.data?.detail || 'Could not load the bureau queue.');
     } finally {
       setLoading(false);
     }
@@ -170,9 +162,15 @@ export default function OfficialInbox() {
         {/* Bureau Cases Table */}
         <div className="overflow-x-auto">
           {loading ? (
-            <div className="p-12 text-center text-xs text-slate-500">
-              Loading bureau queue...
-            </div>
+            <PageState type="loading" title="Loading bureau queue" />
+          ) : error ? (
+            <PageState
+              type="error"
+              title="Bureau queue unavailable"
+              description={error}
+              actionLabel="Retry"
+              onAction={fetchComplaints}
+            />
           ) : complaints.length === 0 ? (
             <div className="p-12 text-center text-slate-500 text-xs">
               No cases matching filter criteria.
@@ -212,13 +210,7 @@ export default function OfficialInbox() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4">
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
-                          STATUS_BADGE_CLASSES[c.status] || ''
-                        }`}
-                      >
-                        {c.status}
-                      </span>
+                      <StatusBadge status={c.status} />
                     </td>
                     <td className="py-3.5 px-4 text-slate-700">
                       {c.assigned_official_name || (
