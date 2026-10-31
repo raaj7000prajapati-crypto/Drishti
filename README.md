@@ -74,6 +74,9 @@ docker compose up --build
 The backend runs `alembic upgrade head` before seeding prototype data. On
 existing databases previously created with SQLAlchemy `create_all`, the initial
 migration creates any newly modelled tables without dropping existing data.
+The backend image downloads the multilingual sentence model during its build
+and keeps it in the image's Hugging Face cache. Local evaluation downloads the
+same model on first use and reuses the Hugging Face cache on subsequent runs.
 
 | Service | URL |
 |---|---|
@@ -144,12 +147,20 @@ local demonstrations only:
   and JSON health/metrics endpoints
 
 These features have important limitations: some non-case routers still perform
-database work directly; sentence-embedding evaluation is skipped when the model
-cannot load; login lockout and dashboard cache state are process-local; and the
-local performance smoke test is not a production capacity estimate. See
+database work directly; login lockout and dashboard cache state are process-local;
+and the local performance smoke test is not a production capacity estimate. The
+84-pair synthetic evaluation includes TF-IDF, multilingual sentence-embedding,
+and hybrid measurements; it is not a production accuracy estimate. See
 [docs/AUDIT.md](./docs/AUDIT.md), [docs/PERFORMANCE.md](./docs/PERFORMANCE.md),
 and [ml/results.md](./ml/results.md) for current audit status, measured load
-results, and skipped model metrics.
+results, and ML metrics.
+
+To run the labelled ML evaluation locally (the first run downloads and caches
+the embedding model):
+
+```powershell
+.\.venv\Scripts\python.exe ml\evaluate.py
+```
 
 ## Screenshots
 
@@ -202,9 +213,8 @@ role-denial, object-authorization, refresh-token, upload-validation,
 security-header, audit-integrity, and workflow tests. There is no automated
 browser end-to-end suite. The Locust report in
 [docs/PERFORMANCE.md](./docs/PERFORMANCE.md) is a measured local load-test
-smoke test, not production capacity validation. The synthetic ML evaluation
-reports real TF-IDF metrics but skips sentence-embedding and hybrid metrics
-when the configured model cannot load; see [ml/results.md](./ml/results.md).
+smoke test, not production capacity validation. The synthetic ML evaluation measures TF-IDF, sentence-embedding, and hybrid
+metrics from the labelled CSV; see [ml/results.md](./ml/results.md).
 
 ## Security notes
 

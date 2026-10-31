@@ -1,6 +1,7 @@
 import csv
 import sys
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.config import settings
 from app.ml.engine import (
     active_sentence_model_name,
     create_tfidf_vectorizer,
@@ -25,8 +25,10 @@ from app.ml.engine import (
 
 DATASET_PATH = Path(__file__).with_name("dataset.csv")
 RESULTS_PATH = Path(__file__).with_name("results.md")
+CHART_PATH = Path(__file__).with_name("results-chart.svg")
 OPERATIONAL_THRESHOLDS = (0.30, 0.50, 0.80)
 SEARCH_THRESHOLDS = tuple(round(value, 2) for value in np.arange(0.05, 1.0, 0.05))
+WEIGHT_SEARCH = tuple(round(value, 2) for value in np.arange(0.0, 1.01, 0.05))
 
 
 def load_dataset(path: Path = DATASET_PATH) -> tuple[list[tuple[str, str]], list[int], dict[str, int]]:
@@ -99,6 +101,32 @@ def evaluate_scores(labels: list[int], scores: list[float]) -> dict[str, Any]:
     return max(metrics, key=lambda row: (row["f1"], row["precision"], row["threshold"]))
 
 
+def select_hybrid_weights(
+    labels: list[int], tfidf_scores: list[float], embedding_scores: list[float]
+) -> tuple[float, float, list[float], dict[str, Any]]:
+    candidates = []
+    for embedding_weight in WEIGHT_SEARCH:
+        tfidf_weight = round(1.0 - embedding_weight, 2)
+        scores = [
+            (tfidf * tfidf_weight) + (semantic * embedding_weight)
+            for tfidf, semantic in zip(tfidf_scores, embedding_scores)
+        ]
+        best = evaluate_scores(labels, scores)
+        candidates.append(
+            (best, tfidf_weight, embedding_weight, scores)
+        )
+    best, tfidf_weight, embedding_weight, scores = max(
+        candidates,
+        key=lambda candidate: (
+            candidate[0]["f1"],
+            candidate[0]["precision"],
+            candidate[0]["recall"],
+            candidate[1],
+        ),
+    )
+    return tfidf_weight, embedding_weight, scores, best
+
+
 def _embedding_scores(pairs: list[tuple[str, str]], model: Any) -> list[float]:
     texts = [text for pair in pairs for text in pair]
     embeddings = np.asarray(
@@ -119,6 +147,68 @@ def _embedding_scores(pairs: list[tuple[str, str]], model: Any) -> list[float]:
         float(np.clip(np.dot(embeddings[index], embeddings[index + 1]), 0.0, 1.0))
         for index in range(0, len(texts), 2)
     ]
+
+
+def _write_metrics_chart(metrics: list[tuple[str, dict[str, Any]]]) -> None:
+    width = 760
+    chart_left = 230
+    chart_width = 480
+    row_height = 76
+    top = 72
+    colors = {"precision": "#2563eb", "recall": "#16a34a", "f1": "#ea580c"}
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+        f'height="{top + row_height * len(metrics) + 35}" viewBox="0 0 {width} '
+        f'{top + row_height * len(metrics) + 35}" role="img">',
+        "<title>Precision, recall, and F1 by model</title>",
+        '<rect width="100%" height="100%" fill="#ffffff"/>',
+        '<text x="24" y="34" font-family="Arial,sans-serif" font-size="20" '
+        'font-weight="700" fill="#111827">Best-threshold metrics</text>',
+    ]
+    for index, (metric, color) in enumerate(colors.items()):
+        x = chart_left + index * 155
+        lines.extend(
+            [
+                f'<rect x="{x}" y="48" width="12" height="12" fill="{color}"/>',
+                f'<text x="{x + 18}" y="59" font-family="Arial,sans-serif" '
+                f'font-size="13" fill="#374151">{metric.title()}</text>',
+            ]
+        )
+
+    for tick in range(0, 11, 2):
+        x = chart_left + chart_width * tick / 10
+        lines.extend(
+            [
+                f'<line x1="{x:.1f}" y1="{top - 8}" x2="{x:.1f}" '
+                f'y2="{top + row_height * len(metrics) - 13}" '
+                'stroke="#e5e7eb"/>',
+                f'<text x="{x:.1f}" y="{top + row_height * len(metrics) + 5}" '
+                'text-anchor="middle" font-family="Arial,sans-serif" '
+                f'font-size="11" fill="#6b7280">{tick / 10:.1f}</text>',
+            ]
+        )
+
+    for row_index, (name, values) in enumerate(metrics):
+        y = top + row_index * row_height
+        lines.append(
+            f'<text x="20" y="{y + 22}" font-family="Arial,sans-serif" '
+            f'font-size="13" fill="#111827">{escape(name)}</text>'
+        )
+        for metric_index, (metric, color) in enumerate(colors.items()):
+            bar_y = y + metric_index * 17
+            value = values[metric]
+            bar_width = chart_width * value
+            lines.extend(
+                [
+                    f'<rect x="{chart_left}" y="{bar_y}" width="{bar_width:.2f}" '
+                    f'height="12" rx="2" fill="{color}"/>',
+                    f'<text x="{chart_left + bar_width + 5:.2f}" y="{bar_y + 10}" '
+                    'font-family="Arial,sans-serif" font-size="10" '
+                    f'fill="#374151">{value:.3f}</text>',
+                ]
+            )
+    lines.append("</svg>")
+    CHART_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _format_model_section(name: str, scores: list[float], labels: list[int]) -> str:
@@ -162,11 +252,13 @@ def run_evaluation() -> str:
     sections = [
         _format_model_section("TF-IDF cosine", tfidf_scores, labels)
     ]
+    chart_metrics = [("TF-IDF cosine", evaluate_scores(labels, tfidf_scores))]
 
     model_name = active_sentence_model_name()
     model = get_sentence_model()
     embedding_scores = None
     model_status = ""
+    weight_status = "Not evaluated because sentence embeddings were unavailable."
     if model is None:
         model_status = (
             f"Skipped sentence-embedding and hybrid evaluation: configured model "
@@ -184,6 +276,7 @@ def run_evaluation() -> str:
             )
             print(model_status)
         else:
+            embedding_metrics = evaluate_scores(labels, embedding_scores)
             sections.append(
                 _format_model_section(
                     f"Sentence embeddings ({model_name})",
@@ -191,14 +284,25 @@ def run_evaluation() -> str:
                     labels,
                 )
             )
-            hybrid_scores = [
-                (tfidf * settings.SIMILARITY_TFIDF_WEIGHT)
-                + (semantic * settings.SIMILARITY_EMBEDDING_WEIGHT)
-                for tfidf, semantic in zip(tfidf_scores, embedding_scores)
-            ]
+            chart_metrics.append(("Sentence embeddings", embedding_metrics))
+            tfidf_weight, embedding_weight, hybrid_scores, hybrid_metrics = (
+                select_hybrid_weights(labels, tfidf_scores, embedding_scores)
+            )
+            weight_status = (
+                f"Selected **{tfidf_weight:.2f} TF-IDF / {embedding_weight:.2f} "
+                f"embedding** after evaluating all weight pairs in 0.05 increments "
+                f"from 0.00/1.00 through 1.00/0.00. At each pair, the best threshold "
+                f"was chosen by F1; weight pairs were ranked by F1, precision, recall, "
+                f"then TF-IDF weight. The selected in-sample result is "
+                f"F1 {hybrid_metrics['f1']:.4f} at threshold "
+                f"{hybrid_metrics['threshold']:.2f}. This is exploratory tuning and "
+                f"not independent validation."
+            )
             sections.append(
                 _format_model_section("Hybrid weighted cosine", hybrid_scores, labels)
             )
+            chart_metrics.append(("Hybrid weighted cosine", hybrid_metrics))
+    _write_metrics_chart(chart_metrics)
 
     total = len(pairs)
     related = sum(labels)
@@ -217,6 +321,12 @@ def run_evaluation() -> str:
             "",
             "This small synthetic dataset is a smoke-test benchmark, not an estimate of "
             "production accuracy. Thresholds were evaluated against the supplied labels.",
+            "",
+            "## Hybrid weight selection",
+            "",
+            weight_status,
+            "",
+            "![Measured precision, recall, and F1 by model](./results-chart.svg)",
             "",
             "## Model availability",
             "",

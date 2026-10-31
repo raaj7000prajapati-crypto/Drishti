@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="183" viewBox="0 0 760 183" role="img">
+<title>Precision, recall, and F1 by model</title>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="24" y="34" font-family="Arial,sans-serif" font-size="20" font-weight="700" fill="#111827">Best-threshold metrics</text>
+<rect x="230" y="48" width="12" height="12" fill="#2563eb"/>
+<text x="248" y="59" font-family="Arial,sans-serif" font-size="13" fill="#374151">Precision</text>
+<rect x="385" y="48" width="12" height="12" fill="#16a34a"/>
+<text x="403" y="59" font-family="Arial,sans-serif" font-size="13" fill="#374151">Recall</text>
+<rect x="540" y="48" width="12" height="12" fill="#ea580c"/>
+<text x="558" y="59" font-family="Arial,sans-serif" font-size="13" fill="#374151">F1</text>
+<line x1="230.0" y1="64" x2="230.0" y2="135" stroke="#e5e7eb"/>
+<text x="230.0" y="153" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#6b7280">0.0</text>
+<line x1="326.0" y1="64" x2="326.0" y2="135" stroke="#e5e7eb"/>
+<text x="326.0" y="153" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#6b7280">0.2</text>
+<line x1="422.0" y1="64" x2="422.0" y2="135" stroke="#e5e7eb"/>
+<text x="422.0" y="153" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#6b7280">0.4</text>
+<line x1="518.0" y1="64" x2="518.0" y2="135" stroke="#e5e7eb"/>
+<text x="518.0" y="153" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#6b7280">0.6</text>
+<line x1="614.0" y1="64" x2="614.0" y2="135" stroke="#e5e7eb"/>
+<text x="614.0" y="153" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#6b7280">0.8</text>
+<line x1="710.0" y1="64" x2="710.0" y2="135" stroke="#e5e7eb"/>
+<text x="710.0" y="153" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#6b7280">1.0</text>
+<text x="20" y="94" font-family="Arial,sans-serif" font-size="13" fill="#111827">TF-IDF cosine</text>
+<rect x="230" y="72" width="387.69" height="12" rx="2" fill="#2563eb"/>
+<text x="622.69" y="82" font-family="Arial,sans-serif" font-size="10" fill="#374151">0.808</text>
+<rect x="230" y="89" width="288.00" height="12" rx="2" fill="#16a34a"/>
+<text x="523.00" y="99" font-family="Arial,sans-serif" font-size="10" fill="#374151">0.600</text>
+<rect x="230" y="106" width="330.49" height="12" rx="2" fill="#ea580c"/>
+<text x="565.49" y="116" font-family="Arial,sans-serif" font-size="10" fill="#374151">0.689</text>
+</svg>

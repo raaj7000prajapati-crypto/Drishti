@@ -55,8 +55,8 @@ class Settings(BaseSettings):
     SIMILARITY_HIGH_THRESHOLD: float = 0.80
     SIMILARITY_MEDIUM_THRESHOLD: float = 0.50
     SIMILARITY_LOW_THRESHOLD: float = 0.30
-    SIMILARITY_TFIDF_WEIGHT: float = Field(default=0.35, ge=0, le=1)
-    SIMILARITY_EMBEDDING_WEIGHT: float = Field(default=0.65, ge=0, le=1)
+    SIMILARITY_TFIDF_WEIGHT: float = Field(default=0.65, ge=0, le=1)
+    SIMILARITY_EMBEDDING_WEIGHT: float = Field(default=0.35, ge=0, le=1)
     SIMILARITY_MULTILINGUAL_ENABLED: bool = True
     SIMILARITY_ENGLISH_MODEL: str = "all-MiniLM-L6-v2"
     SIMILARITY_MULTILINGUAL_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
