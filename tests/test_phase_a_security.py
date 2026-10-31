@@ -23,6 +23,8 @@ from app.models.complaint import (
     CaseLink,
     Complaint,
     ComplaintAttachment,
+    ComplaintEvent,
+    Priority,
     ComplaintStatus,
     Determination,
     InformationRequest,
@@ -32,6 +34,7 @@ from app.models.case_group import CaseGroup, CaseGroupMember
 from app.models.notification import Notification
 from app.models.user import RefreshToken, Role, User
 from app.services.audit import verify_audit_chain
+from app.services import intake as intake_service
 from app.services.cases import (
     InvalidCaseTransition,
     determine_case,
@@ -513,6 +516,188 @@ def test_case_state_machine_allows_forward_workflow_and_records_each_transition(
     assert db_session.query(AuditLog).count() == audit_count + len(expected_statuses)
 
 
+def test_intake_assignment_records_state_transition(
+    db_session, security_records, monkeypatch
+):
+    records = security_records
+    monkeypatch.setattr(
+        intake_service,
+        "route_complaint",
+        lambda **kwargs: (records.own_case.bureau_id, "test routing"),
+    )
+    monkeypatch.setattr(
+        intake_service,
+        "assign_least_loaded_official",
+        lambda db, bureau_id: records.officer_a.id,
+    )
+    monkeypatch.setattr(intake_service, "correlate_complaint", lambda db, complaint: None)
+    monkeypatch.setattr(intake_service, "send_email", lambda **kwargs: True)
+
+    complaint = asyncio.run(
+        intake_service.file_complaint(
+            db_session,
+            records.owner,
+            institution_name="Test institution",
+            institution_state="State",
+            institution_city="City",
+            category="Other",
+            priority=Priority.MEDIUM,
+            subject="Newly filed case",
+            description="A test complaint for auto-assignment.",
+            ip_address="127.0.0.1",
+        )
+    )
+
+    assert complaint.status == ComplaintStatus.ASSIGNED
+    assignment_event = (
+        db_session.query(ComplaintEvent)
+        .filter_by(complaint_id=complaint.id, event_type="ASSIGNED")
+        .one()
+    )
+    assert assignment_event.event_metadata == {
+        "from_status": ComplaintStatus.NEW.value,
+        "to_status": ComplaintStatus.ASSIGNED.value,
+    }
+    assignment_audit = (
+        db_session.query(AuditLog)
+        .filter_by(action="CASE_AUTO_ASSIGNED", entity_id=str(complaint.id))
+        .one()
+    )
+    assert '"status": "New"' in assignment_audit.before_state
+    assert '"status": "Assigned"' in assignment_audit.after_state
+
+
+def test_every_allowed_state_transition_records_event_and_audit(
+    db_session, security_records
+):
+    allowed = {
+        ComplaintStatus.NEW: {ComplaintStatus.ASSIGNED, ComplaintStatus.OVERDUE},
+        ComplaintStatus.ASSIGNED: {
+            ComplaintStatus.IN_PROGRESS,
+            ComplaintStatus.OVERDUE,
+        },
+        ComplaintStatus.IN_PROGRESS: {
+            ComplaintStatus.AWAITING_INFO,
+            ComplaintStatus.OVERDUE,
+            ComplaintStatus.CLOSED,
+        },
+        ComplaintStatus.AWAITING_INFO: {
+            ComplaintStatus.IN_PROGRESS,
+            ComplaintStatus.OVERDUE,
+            ComplaintStatus.CLOSED,
+        },
+        ComplaintStatus.OVERDUE: {
+            ComplaintStatus.IN_PROGRESS,
+            ComplaintStatus.AWAITING_INFO,
+            ComplaintStatus.CLOSED,
+        },
+        ComplaintStatus.CLOSED: set(),
+    }
+    complaint = security_records.own_case
+    actor = security_records.officer_a
+
+    for source, targets in allowed.items():
+        for target in targets:
+            complaint.status = source
+            complaint.determination = (
+                Determination.ACCEPTED if target == ComplaintStatus.CLOSED
+                else Determination.NONE
+            )
+            complaint.is_archived = source == ComplaintStatus.CLOSED
+            complaint.is_overdue = source == ComplaintStatus.OVERDUE
+            complaint.closed_at = None
+            db_session.flush()
+            event_count = db_session.query(ComplaintEvent).filter_by(
+                complaint_id=complaint.id
+            ).count()
+            audit_count = db_session.query(AuditLog).count()
+
+            transition_case(
+                db_session,
+                complaint.id,
+                target,
+                actor=actor,
+                ip_address="127.0.0.1",
+            )
+
+            assert complaint.status == target
+            assert db_session.query(ComplaintEvent).filter_by(
+                complaint_id=complaint.id
+            ).count() == event_count + 1
+            assert db_session.query(AuditLog).count() == audit_count + 1
+            transition_event = (
+                db_session.query(ComplaintEvent)
+                .filter_by(complaint_id=complaint.id)
+                .order_by(ComplaintEvent.id.desc())
+                .first()
+            )
+            assert transition_event.event_metadata == {
+                "from_status": source.value,
+                "to_status": target.value,
+            }
+
+
+def test_every_forbidden_state_transition_has_no_side_effects(
+    db_session, security_records
+):
+    allowed = {
+        ComplaintStatus.NEW: {ComplaintStatus.ASSIGNED, ComplaintStatus.OVERDUE},
+        ComplaintStatus.ASSIGNED: {
+            ComplaintStatus.IN_PROGRESS,
+            ComplaintStatus.OVERDUE,
+        },
+        ComplaintStatus.IN_PROGRESS: {
+            ComplaintStatus.AWAITING_INFO,
+            ComplaintStatus.OVERDUE,
+            ComplaintStatus.CLOSED,
+        },
+        ComplaintStatus.AWAITING_INFO: {
+            ComplaintStatus.IN_PROGRESS,
+            ComplaintStatus.OVERDUE,
+            ComplaintStatus.CLOSED,
+        },
+        ComplaintStatus.OVERDUE: {
+            ComplaintStatus.IN_PROGRESS,
+            ComplaintStatus.AWAITING_INFO,
+            ComplaintStatus.CLOSED,
+        },
+        ComplaintStatus.CLOSED: set(),
+    }
+    complaint = security_records.own_case
+    actor = security_records.officer_a
+
+    for source in ComplaintStatus:
+        for target in ComplaintStatus:
+            if target in allowed[source]:
+                continue
+            complaint.status = source
+            complaint.determination = Determination.NONE
+            complaint.is_archived = source == ComplaintStatus.CLOSED
+            complaint.is_overdue = source == ComplaintStatus.OVERDUE
+            complaint.closed_at = None
+            db_session.flush()
+            event_count = db_session.query(ComplaintEvent).filter_by(
+                complaint_id=complaint.id
+            ).count()
+            audit_count = db_session.query(AuditLog).count()
+
+            with pytest.raises(InvalidCaseTransition):
+                transition_case(
+                    db_session,
+                    complaint.id,
+                    target,
+                    actor=actor,
+                    ip_address="127.0.0.1",
+                )
+
+            db_session.refresh(complaint)
+            assert complaint.status == source
+            assert db_session.query(ComplaintEvent).filter_by(
+                complaint_id=complaint.id
+            ).count() == event_count
+            assert db_session.query(AuditLog).count() == audit_count
+
+
 def test_case_state_machine_rejects_illegal_transition_without_side_effects(
     db_session, security_records
 ):
@@ -559,6 +744,13 @@ def test_officer_and_case_owner_complete_information_request_workflow(
         actor=records.officer_a,
         ip_address="127.0.0.1",
     )
+    transition_case(
+        db_session,
+        records.own_case.id,
+        ComplaintStatus.IN_PROGRESS,
+        actor=records.officer_a,
+        ip_address="127.0.0.1",
+    )
     response = client.post(
         f"/api/v1/officials/cases/{records.own_case.id}/request-info",
         json={"question": "Please provide supporting details."},
@@ -587,7 +779,13 @@ def test_officer_and_case_owner_complete_information_request_workflow(
     assert owner_response.json()["status"] == "RESPONDED"
 
 
-def test_determination_closes_case_and_archives_it(db_session, security_records):
+@pytest.mark.parametrize(
+    "determination",
+    [Determination.ACCEPTED, Determination.REJECTED],
+)
+def test_determination_closes_case_and_archives_it(
+    db_session, security_records, determination
+):
     complaint = security_records.own_case
     actor = security_records.officer_a
     transition_case(
@@ -609,15 +807,15 @@ def test_determination_closes_case_and_archives_it(db_session, security_records)
     determine_case(
         db_session,
         complaint.id,
-        Determination.ACCEPTED,
-        "Corrective action completed.",
+        determination,
+        "Decision documented.",
         actor,
         "127.0.0.1",
     )
 
     db_session.refresh(complaint)
     assert complaint.status == ComplaintStatus.CLOSED
-    assert complaint.determination == Determination.ACCEPTED
+    assert complaint.determination == determination
     assert complaint.is_archived is True
     assert complaint.closed_at is not None
     assert db_session.query(AuditLog).count() == audit_count + 1

@@ -26,14 +26,11 @@ from app.services.notification import send_email
 ALLOWED_CASE_TRANSITIONS: dict[ComplaintStatus, frozenset[ComplaintStatus]] = {
     ComplaintStatus.NEW: frozenset({
         ComplaintStatus.ASSIGNED,
-        ComplaintStatus.IN_PROGRESS,
         ComplaintStatus.OVERDUE,
     }),
     ComplaintStatus.ASSIGNED: frozenset({
         ComplaintStatus.IN_PROGRESS,
-        ComplaintStatus.AWAITING_INFO,
         ComplaintStatus.OVERDUE,
-        ComplaintStatus.CLOSED,
     }),
     ComplaintStatus.IN_PROGRESS: frozenset({
         ComplaintStatus.AWAITING_INFO,

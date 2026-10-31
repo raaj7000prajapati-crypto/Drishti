@@ -20,6 +20,7 @@ from app.services.correlation import correlate_complaint
 from app.services.notification import create_notification, send_email
 from app.services.routing import assign_least_loaded_official, route_complaint
 from app.services.sla import calculate_sla_due_at
+from app.services.cases import transition_case
 
 
 def generate_receipt_id(db: Session) -> str:
@@ -64,7 +65,7 @@ async def file_complaint(
         priority=priority,
         subject=subject.strip(),
         description=description.strip(),
-        status=ComplaintStatus.ASSIGNED if assigned_official_id else ComplaintStatus.NEW,
+        status=ComplaintStatus.NEW,
         bureau_id=target_bureau_id,
         assigned_official_id=assigned_official_id,
         sla_due_at=sla_due_at,
@@ -113,17 +114,24 @@ async def file_complaint(
     )
     if assigned_official_id:
         official = db.query(User).filter(User.id == assigned_official_id).first()
-        db.add(
-            ComplaintEvent(
-                complaint_id=complaint.id,
-                actor_id=None,
-                event_type="ASSIGNED",
-                title="Assigned to Official",
-                description=(
-                    "Auto-assigned to least-loaded bureau official: "
-                    f"{official.full_name if official else 'Officer'}."
-                ),
-            )
+        transition_case(
+            db,
+            complaint.id,
+            ComplaintStatus.ASSIGNED,
+            actor=None,
+            actor_email="system.routing@aicte.gov.in",
+            ip_address=ip_address,
+            event_type="ASSIGNED",
+            title="Assigned to Official",
+            description=(
+                "Auto-assigned to least-loaded bureau official: "
+                f"{official.full_name if official else 'Officer'}."
+            ),
+            audit_action="CASE_AUTO_ASSIGNED",
+            after_extra={
+                "bureau_id": target_bureau_id,
+                "assigned_official_id": assigned_official_id,
+            },
         )
         create_notification(
             db,
