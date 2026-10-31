@@ -1,6 +1,6 @@
 import json
 from typing import Annotated, List
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 INSECURE_SECRET_KEY = "drishti-aicte-super-secure-secret-key-sih-2026"
@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     SIMILARITY_HIGH_THRESHOLD: float = 0.80
     SIMILARITY_MEDIUM_THRESHOLD: float = 0.50
     SIMILARITY_LOW_THRESHOLD: float = 0.30
+    SIMILARITY_TFIDF_WEIGHT: float = Field(default=0.35, ge=0, le=1)
+    SIMILARITY_EMBEDDING_WEIGHT: float = Field(default=0.65, ge=0, le=1)
+    SIMILARITY_MULTILINGUAL_ENABLED: bool = True
+    SIMILARITY_ENGLISH_MODEL: str = "all-MiniLM-L6-v2"
+    SIMILARITY_MULTILINGUAL_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    SIMILARITY_EMBEDDING_CACHE_VERSION: str = "1"
     
     # SLA Configurations (in days)
     SLA_URGENT_DAYS: int = 1
@@ -74,5 +80,21 @@ class Settings(BaseSettings):
                 raise ValueError("BACKEND_CORS_ORIGINS must be a JSON array or comma-separated origins")
             return [origin.strip().rstrip("/") for origin in parsed if origin.strip()]
         return [origin.strip().rstrip("/") for origin in raw_value.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def validate_similarity_settings(self):
+        if not (
+            0 <= self.SIMILARITY_LOW_THRESHOLD
+            < self.SIMILARITY_MEDIUM_THRESHOLD
+            < self.SIMILARITY_HIGH_THRESHOLD
+            <= 1
+        ):
+            raise ValueError(
+                "Similarity thresholds must satisfy 0 <= low < medium < high <= 1."
+            )
+        total_weight = self.SIMILARITY_TFIDF_WEIGHT + self.SIMILARITY_EMBEDDING_WEIGHT
+        if abs(total_weight - 1.0) > 1e-6:
+            raise ValueError("Similarity weights must sum to 1.")
+        return self
 
 settings = Settings()

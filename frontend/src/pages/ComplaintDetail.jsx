@@ -622,11 +622,23 @@ export default function ComplaintDetail() {
                       Bureau: <strong>{link.target_bureau_name}</strong>
                     </p>
 
-                    {link.shared_keywords && (
-                      <p className="text-[11px] text-amber-800 mt-1 bg-white/70 p-1.5 rounded">
-                        <strong>Why:</strong> {link.shared_keywords}
+                    <div
+                      className="text-[11px] text-amber-900 mt-2 bg-white/70 p-2 rounded space-y-1"
+                      aria-label="Why these cases matched"
+                    >
+                      <strong>Why matched</strong>
+                      <p>
+                        {link.similarity_bucket} match · {Math.round(link.similarity_score * 100)}% combined score
                       </p>
-                    )}
+                      {link.shared_keywords && <p>Shared keywords: {link.shared_keywords}</p>}
+                      {Object.keys(link.shared_metadata || {}).length > 0 && (
+                        <p>
+                          Shared details: {Object.entries(link.shared_metadata)
+                            .map(([field, value]) => `${field}: ${value}`)
+                            .join(', ')}
+                        </p>
+                      )}
+                    </div>
 
                     {/* Human-in-the-Loop Decisions */}
                     {isOfficialOrAdmin && link.status === 'SUGGESTED' && (

@@ -60,6 +60,7 @@ class CaseLinkResponse(BaseModel):
     similarity_score: float
     similarity_bucket: str
     shared_keywords: Optional[str] = None
+    shared_metadata: Optional[dict[str, str]] = None
     status: str
     decided_at: Optional[datetime] = None
     decided_by_name: Optional[str] = None

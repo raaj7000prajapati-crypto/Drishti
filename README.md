@@ -46,8 +46,8 @@ erDiagram
     BUREAUS ||--o{ ROUTING_RULES : targets
 ```
 
-`CASE_LINKS` has two complaint references (source and target). The current
-implementation has no explicit case-group entity.
+`CASE_LINKS` has two complaint references (source and target). Confirmed links
+are also joined into explicit case groups.
 
 ## Technology
 
@@ -57,7 +57,8 @@ implementation has no explicit case-group entity.
   refresh tokens in an httpOnly cookie; passwords are hashed with bcrypt
 - Data: SQLite for local development; PostgreSQL 16 in Docker Compose
 - Background work: in-process APScheduler for SLA checks
-- Similarity: scikit-learn TF-IDF fallback and optional sentence-transformers
+- Similarity: configurable TF-IDF/sentence-embedding hybrid with multilingual
+  model selection, cached embeddings, and logged TF-IDF-only fallback
 - Tests: pytest and httpx
 
 ## Getting started
@@ -131,8 +132,9 @@ local demonstrations only:
 - Complaint timelines, information requests and responses, annotations,
   determinations, state-validated closure, and post-closure feedback
 - Confirmed related cases are joined in explicit case groups
-- Similarity suggestions, a basic shared-keyword explanation, and official
-  confirm/reject decisions
+- Hybrid similarity suggestions with match score/bucket, shared keywords and
+  shared metadata explanations, and official confirm/reject decisions
+- Admin-configurable similarity bucket thresholds
 - SLA deadline calculation and an in-process overdue-case scheduler
 - Database triggers that block updates and deletes to audit-log rows on
   supported SQLite and PostgreSQL deployments, with a SHA-256 hash chain and
@@ -141,9 +143,11 @@ local demonstrations only:
 - Analytics, CSV/PDF report routes, and JSON health/metrics endpoints
 
 These features have important limitations: some non-case routers still perform
-database work directly; similarity does not use a hybrid score; login lockout
-state is in-process; and production deployment and performance still need
-further hardening. See [docs/AUDIT.md](./docs/AUDIT.md).
+database work directly; sentence-embedding evaluation is skipped when the model
+cannot load; login lockout state is in-process; and production deployment and
+performance still need further hardening. See [docs/AUDIT.md](./docs/AUDIT.md)
+and [ml/results.md](./ml/results.md) for the measured evaluation and skipped
+model details.
 
 ## API overview
 
@@ -156,7 +160,7 @@ The API is versioned under `/api/v1`. Interactive documentation is served at
 | Complaints | `/complaints/`, `/complaints/check-duplicates`, `/complaints/{id}` |
 | Complaint follow-up | `/complaints/{id}/info-respond`, `/complaints/{id}/feedback` |
 | Official operations | `/officials/cases/{id}/status`, `/request-info`, `/annotate`, `/determination` |
-| Admin | `/admin/users`, `/admin/bureaus`, `/admin/rules`, `/admin/sla`, `/admin/audit-logs` |
+| Admin | `/admin/users`, `/admin/bureaus`, `/admin/rules`, `/admin/sla`, `/admin/similarity-thresholds`, `/admin/audit-logs` |
 | Analytics and reports | `/analytics/dashboard`, `/reports/export/csv`, `/reports/export/pdf` |
 | Notifications | `/notifications/`, `/notifications/{id}/read` |
 

@@ -8,6 +8,7 @@ from app.models.bureau import Bureau
 from app.models.complaint import Complaint, ComplaintStatus
 from app.models.rules import RoutingRule, SLAConfig
 from app.models.user import Role, User
+from app.models.similarity import SimilarityThresholdConfig
 
 
 def list_users(
@@ -84,6 +85,16 @@ def get_sla_config(db: Session, priority: str) -> SLAConfig | None:
     return (
         db.query(SLAConfig)
         .filter(SLAConfig.priority.ilike(priority))
+        .first()
+    )
+
+
+def get_similarity_threshold_config(
+    db: Session,
+) -> SimilarityThresholdConfig | None:
+    return (
+        db.query(SimilarityThresholdConfig)
+        .filter(SimilarityThresholdConfig.id == 1)
         .first()
     )
 

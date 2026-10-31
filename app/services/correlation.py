@@ -1,31 +1,58 @@
 import json
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
+
 from sqlalchemy.orm import Session
-from app.models.complaint import Complaint, CaseLink, ComplaintEmbedding, ComplaintStatus
-from app.models.user import User
-from app.models.audit import AuditLog
+
+from app.core.logging import logger
 from app.ml.engine import (
-    compute_embedding, calculate_cosine_similarity,
-    get_similarity_bucket, extract_shared_keywords
+    active_embedding_model_version,
+    calculate_cosine_similarity,
+    combine_similarity_scores,
+    compute_sentence_embedding,
+    compute_tfidf_similarity_scores,
+    extract_shared_keywords,
+    get_sentence_model,
+    get_similarity_bucket,
 )
-from app.services.notification import create_notification
+from app.models.complaint import (
+    CaseLink,
+    Complaint,
+    ComplaintEmbedding,
+    ComplaintStatus,
+)
+from app.models.user import User
 from app.services.audit import log_audit
 from app.services.case_groups import group_confirmed_link
-from app.core.config import settings
-from app.core.logging import logger
+from app.services.notification import create_notification
+from app.services.similarity import get_similarity_thresholds
 
-def get_or_create_embedding(db: Session, complaint: Complaint) -> List[float]:
-    """Retrieve cached embedding or compute and save new embedding in DB."""
-    record = db.query(ComplaintEmbedding).filter(ComplaintEmbedding.complaint_id == complaint.id).first()
-    if record and record.vector_json:
+
+def _complaint_text(complaint: Complaint) -> str:
+    return f"{complaint.subject}. {complaint.description}"
+
+
+def _get_or_create_embedding(
+    db: Session, complaint: Complaint, model: object, model_name: str
+) -> Optional[List[float]]:
+    record = (
+        db.query(ComplaintEmbedding)
+        .filter(ComplaintEmbedding.complaint_id == complaint.id)
+        .first()
+    )
+    if record and record.model_name == model_name:
         try:
-            return json.loads(record.vector_json)
-        except Exception:
-            pass
+            cached = json.loads(record.vector_json)
+            if isinstance(cached, list) and cached:
+                return cached
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "Ignoring invalid cached embedding for complaint %s.",
+                complaint.id,
+            )
 
-    text_to_embed = f"{complaint.subject}. {complaint.description}"
-    vector, model_name = compute_embedding(text_to_embed)
-
+    vector = compute_sentence_embedding(_complaint_text(complaint), model=model)
+    if vector is None:
+        return None
     if record:
         record.vector_json = json.dumps(vector)
         record.model_name = model_name
@@ -33,124 +60,224 @@ def get_or_create_embedding(db: Session, complaint: Complaint) -> List[float]:
         record = ComplaintEmbedding(
             complaint_id=complaint.id,
             model_name=model_name,
-            vector_json=json.dumps(vector)
+            vector_json=json.dumps(vector),
         )
         db.add(record)
-    
     db.commit()
     return vector
 
+
+def get_or_create_embedding(
+    db: Session, complaint: Complaint
+) -> Optional[List[float]]:
+    """Return a versioned sentence embedding, or None when model loading fails."""
+    model = get_sentence_model()
+    if model is None:
+        return None
+    return _get_or_create_embedding(
+        db, complaint, model, active_embedding_model_version()
+    )
+
+
+def _shared_metadata(
+    first: Complaint, second: Complaint
+) -> dict[str, str]:
+    fields = {
+        "category": (first.category, second.category),
+        "institution": (
+            first.institution_name,
+            second.institution_name,
+        ),
+        "state": (first.institution_state, second.institution_state),
+        "city": (first.institution_city, second.institution_city),
+    }
+    return {
+        key: left.strip()
+        for key, (left, right) in fields.items()
+        if left and right and left.strip().casefold() == right.strip().casefold()
+    }
+
+
+def _hybrid_scores(
+    query_text: str,
+    candidate_texts: list[str],
+    model: object,
+    cached_query_vector: Optional[List[float]] = None,
+    candidate_vectors: Optional[list[Optional[List[float]]]] = None,
+) -> list[float]:
+    lexical_scores = compute_tfidf_similarity_scores(query_text, candidate_texts)
+    query_vector = cached_query_vector
+    if model is not None and query_vector is None:
+        query_vector = compute_sentence_embedding(query_text, model=model)
+
+    scores = []
+    for index, lexical_score in enumerate(lexical_scores):
+        semantic_score = None
+        candidate_vector = (
+            candidate_vectors[index]
+            if candidate_vectors is not None
+            else None
+        )
+        if model is not None and query_vector is not None:
+            if candidate_vectors is None:
+                candidate_vector = compute_sentence_embedding(
+                    candidate_texts[index], model=model
+                )
+            if candidate_vector is not None:
+                try:
+                    semantic_score = calculate_cosine_similarity(
+                        query_vector, candidate_vector
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "Embedding dimensions did not match; using TF-IDF for one comparison: %s",
+                        exc,
+                    )
+        scores.append(combine_similarity_scores(lexical_score, semantic_score))
+    return scores
+
+
 def correlate_complaint(db: Session, complaint: Complaint) -> List[CaseLink]:
-    """
-    Computes cross-bureau cosine similarity against all other existing complaints.
-    Generates suggested CaseLink records for scores >= Low threshold (0.30).
-    """
-    current_vec = get_or_create_embedding(db, complaint)
-    
-    # Query all other complaints
+    """Create suggestions from hybrid lexical and sentence-embedding similarity."""
     other_complaints = (
         db.query(Complaint)
         .filter(Complaint.id != complaint.id)
         .all()
     )
+    model = get_sentence_model()
+    model_name = active_embedding_model_version()
+    current_vector = (
+        _get_or_create_embedding(db, complaint, model, model_name)
+        if model is not None
+        else None
+    )
+    if not other_complaints:
+        return []
 
+    other_vectors = [
+        _get_or_create_embedding(db, other, model, model_name)
+        if model is not None
+        else None
+        for other in other_complaints
+    ]
+    scores = _hybrid_scores(
+        _complaint_text(complaint),
+        [_complaint_text(other) for other in other_complaints],
+        model,
+        cached_query_vector=current_vector,
+        candidate_vectors=other_vectors,
+    )
+
+    thresholds = get_similarity_thresholds(db)
     created_links: List[CaseLink] = []
+    for other, score in zip(other_complaints, scores):
+        if score < thresholds["low_threshold"]:
+            continue
 
-    for other in other_complaints:
-        other_vec = get_or_create_embedding(db, other)
-        score = calculate_cosine_similarity(current_vec, other_vec)
-        
-        # Only suggest links if similarity is at least Low (>= 0.30)
-        if score >= settings.SIMILARITY_LOW_THRESHOLD:
-            bucket = get_similarity_bucket(score)
-            shared_kws = extract_shared_keywords(
-                f"{complaint.subject} {complaint.description}",
-                f"{other.subject} {other.description}"
-            )
-
-            # Check if link already exists in either direction
-            existing_link = (
-                db.query(CaseLink)
-                .filter(
-                    ((CaseLink.source_complaint_id == complaint.id) & (CaseLink.target_complaint_id == other.id)) |
-                    ((CaseLink.source_complaint_id == other.id) & (CaseLink.target_complaint_id == complaint.id))
+        existing_link = (
+            db.query(CaseLink)
+            .filter(
+                (
+                    (CaseLink.source_complaint_id == complaint.id)
+                    & (CaseLink.target_complaint_id == other.id)
                 )
-                .first()
-            )
-
-            if not existing_link:
-                new_link = CaseLink(
-                    source_complaint_id=complaint.id,
-                    target_complaint_id=other.id,
-                    similarity_score=round(score, 4),
-                    similarity_bucket=bucket,
-                    shared_keywords=shared_kws,
-                    status="SUGGESTED"
+                | (
+                    (CaseLink.source_complaint_id == other.id)
+                    & (CaseLink.target_complaint_id == complaint.id)
                 )
-                db.add(new_link)
-                created_links.append(new_link)
+            )
+            .first()
+        )
+        if existing_link:
+            continue
+
+        shared_keywords = extract_shared_keywords(
+            _complaint_text(complaint), _complaint_text(other)
+        )
+        new_link = CaseLink(
+            source_complaint_id=complaint.id,
+            target_complaint_id=other.id,
+            similarity_score=round(score, 4),
+            similarity_bucket=get_similarity_bucket(
+                score,
+                high_thresh=thresholds["high_threshold"],
+                med_thresh=thresholds["medium_threshold"],
+                low_thresh=thresholds["low_threshold"],
+            ),
+            shared_keywords=shared_keywords or None,
+            shared_metadata=_shared_metadata(complaint, other),
+            status="SUGGESTED",
+        )
+        db.add(new_link)
+        created_links.append(new_link)
 
     db.commit()
-    logger.info(f"AI Correlation generated {len(created_links)} suggested links for complaint {complaint.receipt_id}")
+    logger.info(
+        "AI correlation generated %s suggested links for complaint %s",
+        len(created_links),
+        complaint.receipt_id,
+    )
     return created_links
+
 
 def check_intake_duplicates(
     db: Session,
     subject: str,
-    description: str
+    description: str,
 ) -> Tuple[bool, str, int]:
-    """
-    Intake check: checks if a High-similarity open case already exists,
-    providing a duplicate warning without exposing private data.
-    """
+    """Warn about likely open duplicates without returning private case details."""
     text = f"{subject}. {description}"
-    query_vec, _ = compute_embedding(text)
-
-    # Check against non-closed complaints
     open_complaints = (
         db.query(Complaint)
         .filter(Complaint.status != ComplaintStatus.CLOSED)
         .all()
     )
+    if not open_complaints:
+        return False, "", 0
 
-    match_count = 0
-    max_score = 0.0
-
-    for c in open_complaints:
-        emb = get_or_create_embedding(db, c)
-        score = calculate_cosine_similarity(query_vec, emb)
-        if score >= settings.SIMILARITY_HIGH_THRESHOLD:
-            match_count += 1
-            if score > max_score:
-                max_score = score
-
-    if match_count > 0:
+    model = get_sentence_model()
+    model_name = active_embedding_model_version()
+    vectors = [
+        _get_or_create_embedding(db, complaint, model, model_name)
+        if model is not None
+        else None
+        for complaint in open_complaints
+    ]
+    scores = _hybrid_scores(
+        text,
+        [_complaint_text(complaint) for complaint in open_complaints],
+        model,
+        candidate_vectors=vectors,
+    )
+    high_threshold = get_similarity_thresholds(db)["high_threshold"]
+    high_scores = [score for score in scores if score >= high_threshold]
+    if high_scores:
+        max_score = max(high_scores)
         return (
             True,
-            f"Notice: Our AI system detected {match_count} existing active grievance(s) with high similarity (match score ~{int(max_score*100)}%). Your complaint will be routed and linked for consolidated review.",
-            match_count
+            f"Notice: Our AI system detected {len(high_scores)} existing active "
+            f"grievance(s) with high similarity (match score ~{int(max_score * 100)}%). "
+            "Your complaint will be routed and linked for consolidated review.",
+            len(high_scores),
         )
     return False, "", 0
+
 
 def decide_case_link(
     db: Session,
     link_id: int,
-    decision: str,  # "CONFIRMED" or "REJECTED"
+    decision: str,
     deciding_user: User,
-    ip_address: Optional[str] = None
+    ip_address: Optional[str] = None,
 ) -> CaseLink:
-    """
-    Human-in-the-loop decision for AI-suggested case links.
-    Only confirmed links create a case group and notify the other bureau's official.
-    Logs every action in the immutable audit log.
-    """
+    """Apply a human decision to an AI-suggested case link."""
     link = db.query(CaseLink).filter(CaseLink.id == link_id).with_for_update().first()
     if not link:
         raise ValueError(f"Case link {link_id} not found")
 
     from datetime import datetime, timezone
+
     before_state = {"status": link.status, "similarity_score": link.similarity_score}
-    
     link.status = decision
     link.decided_by_id = deciding_user.id
     link.decided_at = datetime.now(timezone.utc)
@@ -159,7 +286,6 @@ def decide_case_link(
     db.commit()
     db.refresh(link)
 
-    # Audit log
     log_audit(
         db=db,
         action=f"AI_LINK_{decision}",
@@ -169,21 +295,22 @@ def decide_case_link(
         actor_email=deciding_user.email,
         ip_address=ip_address,
         before_state=before_state,
-        after_state={"status": link.status, "decided_by": deciding_user.email}
+        after_state={"status": link.status, "decided_by": deciding_user.email},
     )
 
-    # If CONFIRMED, notify the official handling the target complaint if across bureaus
     if decision == "CONFIRMED":
         source_case = link.source_complaint
         target_case = link.target_complaint
-        
         if target_case and target_case.assigned_official_id:
             create_notification(
                 db=db,
                 user_id=target_case.assigned_official_id,
                 title="Cross-Bureau Case Link Confirmed",
-                message=f"Official {deciding_user.full_name} confirmed a related case link between {source_case.receipt_id} and your case {target_case.receipt_id}.",
-                link=f"/cases/{target_case.id}"
+                message=(
+                    f"Official {deciding_user.full_name} confirmed a related case "
+                    f"link between {source_case.receipt_id} and your case "
+                    f"{target_case.receipt_id}."
+                ),
+                link=f"/cases/{target_case.id}",
             )
-
     return link

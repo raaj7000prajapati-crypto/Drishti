@@ -1,194 +1,234 @@
-import os
 import csv
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
 import numpy as np
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import precision_recall_fscore_support, confusion_matrix, accuracy_score
-from app.ml.engine import compute_embedding, calculate_cosine_similarity, SBERT_AVAILABLE
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    precision_recall_fscore_support,
+)
+from sklearn.metrics.pairwise import cosine_similarity
 
-DATASET_PATH = os.path.join(os.path.dirname(__file__), "dataset.csv")
-RESULTS_PATH = os.path.join(os.path.dirname(__file__), "results.md")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-THRESHOLDS = [0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+from app.core.config import settings
+from app.ml.engine import (
+    active_sentence_model_name,
+    create_tfidf_vectorizer,
+    get_sentence_model,
+)
 
-def evaluate_model(pairs, y_true, model_type="tfidf"):
-    """
-    Computes pairwise similarities and evaluates metrics across multiple thresholds.
-    """
-    similarities = []
-    
-    if model_type == "tfidf":
-        # Fit TF-IDF on all texts in the dataset for optimal vocabulary
-        all_texts = [p[0] for p in pairs] + [p[1] for p in pairs]
-        vec = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), sublinear_tf=True)
-        vec.fit(all_texts)
-        
-        for text_a, text_b in pairs:
-            va = vec.transform([text_a]).toarray()[0]
-            vb = vec.transform([text_b]).toarray()[0]
-            norm_a = np.linalg.norm(va)
-            norm_b = np.linalg.norm(vb)
-            sim = float(np.dot(va, vb) / (norm_a * norm_b)) if (norm_a > 0 and norm_b > 0) else 0.0
-            similarities.append(sim)
-            
-    elif model_type == "sbert":
-        if SBERT_AVAILABLE:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer("all-MiniLM-L6-v2")
-            for text_a, text_b in pairs:
-                va = model.encode(text_a, normalize_embeddings=True)
-                vb = model.encode(text_b, normalize_embeddings=True)
-                sim = float(np.dot(va, vb))
-                similarities.append(sim)
+DATASET_PATH = Path(__file__).with_name("dataset.csv")
+RESULTS_PATH = Path(__file__).with_name("results.md")
+OPERATIONAL_THRESHOLDS = (0.30, 0.50, 0.80)
+SEARCH_THRESHOLDS = tuple(round(value, 2) for value in np.arange(0.05, 1.0, 0.05))
+
+
+def load_dataset(path: Path = DATASET_PATH) -> tuple[list[tuple[str, str]], list[int], dict[str, int]]:
+    with path.open(encoding="utf-8-sig", newline="") as dataset_file:
+        reader = csv.DictReader(dataset_file)
+        required_columns = {"text_a", "text_b", "is_related", "language"}
+        if not required_columns.issubset(reader.fieldnames or []):
+            raise ValueError(f"Dataset must contain columns: {sorted(required_columns)}")
+        rows = list(reader)
+
+    if len(rows) < 80:
+        raise ValueError(f"Expected at least 80 labelled pairs; found {len(rows)}.")
+
+    pairs: list[tuple[str, str]] = []
+    labels: list[int] = []
+    languages: dict[str, int] = {}
+    for row_number, row in enumerate(rows, start=2):
+        label = row["is_related"].strip()
+        if label not in {"0", "1"}:
+            raise ValueError(f"Invalid is_related label on CSV row {row_number}: {label!r}")
+        if not row["text_a"].strip() or not row["text_b"].strip():
+            raise ValueError(f"Empty complaint text on CSV row {row_number}.")
+        language = (row["language"] or "").strip()
+        if not language:
+            raise ValueError(f"Missing language label on CSV row {row_number}.")
+        pairs.append((row["text_a"].strip(), row["text_b"].strip()))
+        labels.append(int(label))
+        languages[language] = languages.get(language, 0) + 1
+
+    if len(set(labels)) != 2:
+        raise ValueError("Dataset must contain both related and unrelated examples.")
+    return pairs, labels, languages
+
+
+def tfidf_pair_scores(pairs: list[tuple[str, str]]) -> list[float]:
+    texts = [text for pair in pairs for text in pair]
+    vectors = create_tfidf_vectorizer().fit_transform(texts)
+    return [
+        float(cosine_similarity(vectors[index], vectors[index + 1])[0, 0])
+        for index in range(0, len(texts), 2)
+    ]
+
+
+def evaluate_at_threshold(
+    labels: list[int], scores: list[float], threshold: float
+) -> dict[str, Any]:
+    predictions = [int(score >= threshold) for score in scores]
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, predictions, average="binary", zero_division=0
+    )
+    tn, fp, fn, tp = confusion_matrix(labels, predictions, labels=[0, 1]).ravel()
+    return {
+        "threshold": threshold,
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "accuracy": float(accuracy_score(labels, predictions)),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
+    }
+
+
+def evaluate_scores(labels: list[int], scores: list[float]) -> dict[str, Any]:
+    metrics = [
+        evaluate_at_threshold(labels, scores, threshold)
+        for threshold in SEARCH_THRESHOLDS
+    ]
+    return max(metrics, key=lambda row: (row["f1"], row["precision"], row["threshold"]))
+
+
+def _embedding_scores(pairs: list[tuple[str, str]], model: Any) -> list[float]:
+    texts = [text for pair in pairs for text in pair]
+    embeddings = np.asarray(
+        model.encode(
+            texts,
+            batch_size=32,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ),
+        dtype=np.float32,
+    )
+    if embeddings.ndim != 2 or embeddings.shape[0] != len(texts):
+        raise ValueError("Sentence model returned an unexpected embedding shape.")
+    if not np.isfinite(embeddings).all():
+        raise ValueError("Sentence model returned non-finite embeddings.")
+    return [
+        float(np.clip(np.dot(embeddings[index], embeddings[index + 1]), 0.0, 1.0))
+        for index in range(0, len(texts), 2)
+    ]
+
+
+def _format_model_section(name: str, scores: list[float], labels: list[int]) -> str:
+    best = evaluate_scores(labels, scores)
+    lines = [
+        f"## {name}",
+        "",
+        f"Best F1 threshold (searched in 0.05 increments): **{best['threshold']:.2f}**",
+        "",
+        "| Threshold | Precision | Recall | F1 | Accuracy | TP | FP | TN | FN |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for threshold in sorted(set(OPERATIONAL_THRESHOLDS) | {best["threshold"]}):
+        row = evaluate_at_threshold(labels, scores, threshold)
+        marker = " (best F1)" if threshold == best["threshold"] else ""
+        lines.append(
+            f"| {threshold:.2f}{marker} | {row['precision']:.4f} | "
+            f"{row['recall']:.4f} | {row['f1']:.4f} | {row['accuracy']:.4f} | "
+            f"{row['tp']} | {row['fp']} | {row['tn']} | {row['fn']} |"
+        )
+    best_at_threshold = evaluate_at_threshold(labels, scores, best["threshold"])
+    lines.extend(
+        [
+            "",
+            f"Confusion matrix at the best-F1 threshold ({best['threshold']:.2f}):",
+            "",
+            "```text",
+            "                  Predicted unrelated  Predicted related",
+            f"Actual unrelated              {best_at_threshold['tn']:>4}               {best_at_threshold['fp']:>4}",
+            f"Actual related                {best_at_threshold['fn']:>4}               {best_at_threshold['tp']:>4}",
+            "```",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def run_evaluation() -> str:
+    pairs, labels, languages = load_dataset()
+    tfidf_scores = tfidf_pair_scores(pairs)
+    sections = [
+        _format_model_section("TF-IDF cosine", tfidf_scores, labels)
+    ]
+
+    model_name = active_sentence_model_name()
+    model = get_sentence_model()
+    embedding_scores = None
+    model_status = ""
+    if model is None:
+        model_status = (
+            f"Skipped sentence-embedding and hybrid evaluation: configured model "
+            f"`{model_name}` could not be loaded. See the warning printed by the "
+            "model loader. TF-IDF results below are computed from the dataset."
+        )
+        print(f"Skipped sentence-embedding model {model_name}: unable to load.")
+    else:
+        try:
+            embedding_scores = _embedding_scores(pairs, model)
+        except Exception as exc:
+            model_status = (
+                f"Skipped sentence-embedding and hybrid evaluation: `{model_name}` "
+                f"failed during inference ({type(exc).__name__}: {exc})."
+            )
+            print(model_status)
         else:
-            # High-fidelity simulated SBERT scores based on semantic similarity + ground truth with natural noise
-            for i, (text_a, text_b) in enumerate(pairs):
-                target = y_true[i]
-                if target == 1:
-                    sim = float(np.clip(np.random.normal(0.82, 0.06), 0.55, 0.98))
-                else:
-                    sim = float(np.clip(np.random.normal(0.18, 0.09), 0.02, 0.48))
-                similarities.append(sim)
+            sections.append(
+                _format_model_section(
+                    f"Sentence embeddings ({model_name})",
+                    embedding_scores,
+                    labels,
+                )
+            )
+            hybrid_scores = [
+                (tfidf * settings.SIMILARITY_TFIDF_WEIGHT)
+                + (semantic * settings.SIMILARITY_EMBEDDING_WEIGHT)
+                for tfidf, semantic in zip(tfidf_scores, embedding_scores)
+            ]
+            sections.append(
+                _format_model_section("Hybrid weighted cosine", hybrid_scores, labels)
+            )
 
-    results_per_thresh = []
-    for th in THRESHOLDS:
-        y_pred = [1 if s >= th else 0 for s in similarities]
-        prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="binary", zero_division=0)
-        acc = accuracy_score(y_true, y_pred)
-        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-        tn, fp, fn, tp = cm.ravel()
-        results_per_thresh.append({
-            "threshold": th,
-            "precision": round(prec, 4),
-            "recall": round(rec, 4),
-            "f1": round(f1, 4),
-            "accuracy": round(acc, 4),
-            "tp": int(tp),
-            "fp": int(fp),
-            "tn": int(tn),
-            "fn": int(fn)
-        })
+    total = len(pairs)
+    related = sum(labels)
+    language_summary = ", ".join(
+        f"{language}: {count}" for language, count in sorted(languages.items())
+    )
+    report = "\n".join(
+        [
+            "# Similarity Evaluation Results",
+            "",
+            f"- Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+            f"- Dataset: `ml/dataset.csv` ({total} synthetic labelled complaint pairs)",
+            f"- Labels: {related} related, {total - related} unrelated",
+            f"- Language labels: {language_summary}",
+            "- Scores and metrics below are computed from the labelled CSV; no metrics are simulated.",
+            "",
+            "This small synthetic dataset is a smoke-test benchmark, not an estimate of "
+            "production accuracy. Thresholds were evaluated against the supplied labels.",
+            "",
+            "## Model availability",
+            "",
+            model_status or f"Loaded `{model_name}` and computed embeddings from the dataset.",
+            "",
+            *sections,
+        ]
+    )
+    RESULTS_PATH.write_text(report.rstrip() + "\n", encoding="utf-8")
+    print(f"Evaluated {total} labelled pairs; wrote real metrics to {RESULTS_PATH}.")
+    return report
 
-    return results_per_thresh, similarities
-
-def run_evaluation():
-    print(f"Loading benchmark dataset from: {DATASET_PATH}")
-    df = pd.read_csv(DATASET_PATH)
-    pairs = list(zip(df["text_a"], df["text_b"]))
-    y_true = df["is_related"].tolist()
-    total_pairs = len(pairs)
-    positives = sum(y_true)
-    negatives = total_pairs - positives
-    print(f"Loaded {total_pairs} pairs ({positives} related, {negatives} non-related).")
-
-    np.random.seed(42)
-    print("Evaluating TF-IDF Vectorizer...")
-    tfidf_results, tfidf_sims = evaluate_model(pairs, y_true, model_type="tfidf")
-
-    print(f"Evaluating SBERT (all-MiniLM-L6-v2) [SBERT_AVAILABLE={SBERT_AVAILABLE}]...")
-    sbert_results, sbert_sims = evaluate_model(pairs, y_true, model_type="sbert")
-
-    # Generate Markdown Report
-    best_tfidf = max(tfidf_results, key=lambda x: x["f1"])
-    best_sbert = max(sbert_results, key=lambda x: x["f1"])
-
-    md_content = f"""# Drishti AICTE: AI Correlation Engine Performance Evaluation
-
-*Generated automatically by `/ml/evaluate.py` for Smart India Hackathon 2026*  
-**Date of Run:** 2026-10-29  
-**Evaluation Dataset:** Synthetic Benchmark (`ml/dataset.csv`)  
-**Sample Size:** {total_pairs} complaint pairs ({positives} ground-truth related, {negatives} unrelated)
-
----
-
-## 1. Executive Summary
-The AI Correlation Engine is tasked with discovering cross-bureau related complaints and identifying duplicate grievances without human oversight bottlenecks. We evaluate two model architectures across various cosine similarity decision thresholds:
-1. **SBERT (`all-MiniLM-L6-v2`)**: Dense semantic sentence embedding capturing nuanced institutional context, synonyms, and paraphrased grievances.
-2. **Scikit-Learn TF-IDF + Cosine**: Lightweight, CPU-efficient sparse n-gram lexical baseline serving as zero-dependency fallback.
-
-| Model | Best Threshold | Precision | Recall | F1 Score | Accuracy |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **SBERT (all-MiniLM-L6-v2)** | **{best_sbert['threshold']}** | **{best_sbert['precision']*100:.1f}%** | **{best_sbert['recall']*100:.1f}%** | **{best_sbert['f1']*100:.1f}%** | **{best_sbert['accuracy']*100:.1f}%** |
-| **TF-IDF (Scikit-Learn)** | {best_tfidf['threshold']} | {best_tfidf['precision']*100:.1f}% | {best_tfidf['recall']*100:.1f}% | {best_tfidf['f1']*100:.1f}% | {best_tfidf['accuracy']*100:.1f}% |
-
----
-
-## 2. Threshold Performance Comparison
-
-### SBERT (`all-MiniLM-L6-v2`)
-Dense 384-dimensional semantic embeddings with cosine similarity.
-
-| Threshold | Precision | Recall | F1 Score | Accuracy | TP | FP | TN | FN |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-"""
-    for r in sbert_results:
-        md_content += f"| {r['threshold']:.2f} | {r['precision']:.4f} | {r['recall']:.4f} | {r['f1']:.4f} | {r['accuracy']:.4f} | {r['tp']} | {r['fp']} | {r['tn']} | {r['fn']} |\n"
-
-    md_content += """
-### TF-IDF Baseline (Unigram + Bigram)
-Sparse lexical representation with English stopword removal and sublinear term frequency.
-
-| Threshold | Precision | Recall | F1 Score | Accuracy | TP | FP | TN | FN |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-"""
-    for r in tfidf_results:
-        md_content += f"| {r['threshold']:.2f} | {r['precision']:.4f} | {r['recall']:.4f} | {r['f1']:.4f} | {r['accuracy']:.4f} | {r['tp']} | {r['fp']} | {r['tn']} | {r['fn']} |\n"
-
-    md_content += f"""
----
-
-## 3. Confusion Matrix at Recommended Operating Thresholds
-
-### SBERT at Threshold {best_sbert['threshold']} (Optimal F1)
-```
-                  Predicted Negative    Predicted Positive
-Actual Negative          {best_sbert['tn']}                     {best_sbert['fp']}
-Actual Positive          {best_sbert['fn']}                     {best_sbert['tp']}
-```
-- **True Positive Rate (Sensitivity):** {best_sbert['tp'] / (best_sbert['tp'] + best_sbert['fn']):.2%}
-- **False Positive Rate:** {best_sbert['fp'] / (best_sbert['fp'] + best_sbert['tn']):.2%}
-
-### TF-IDF at Threshold {best_tfidf['threshold']} (Optimal F1)
-```
-                  Predicted Negative    Predicted Positive
-Actual Negative          {best_tfidf['tn']}                     {best_tfidf['fp']}
-Actual Positive          {best_tfidf['fn']}                     {best_tfidf['tp']}
-```
-
----
-
-## 4. Drishti Production Operating Buckets
-
-Based on the empirical precision-recall curve, Drishti AICTE implements a 4-tier similarity bucketing strategy:
-
-1. **High Similarity (≥ 0.80)**:
-   - *Intake Action:* Automatically prompts citizen with duplicate grievance warning.
-   - *Workspace Action:* Highlights case as near-definite duplicate or sister grievance.
-   - *Precision:* > 95%. Zero false-positive disruption.
-
-2. **Medium Similarity (0.50 – 0.79)**:
-   - *Workspace Action:* Displays in official's "Suggested Related Cases" table with shared keywords explanation.
-   - *Human-in-the-Loop:* Official reviews and confirms or rejects. Confirmed links alert officials across other bureaus.
-
-3. **Low Similarity (0.30 – 0.49)**:
-   - *Workspace Action:* Background correlation indexed for cross-institutional trend analysis.
-
-4. **Minimal (< 0.30)**:
-   - Disregarded as non-correlated.
-
----
-
-## 5. Hardware & Scalability Profile
-- **TF-IDF Inference Latency:** ~0.4ms per complaint pair on single CPU core.
-- **SBERT Inference Latency:** ~12ms per complaint on modern CPU / ~1.5ms on GPU.
-- **Database Storage:** Compressed 384-float vector = ~1.5 KB per complaint. Fast in-memory / pgvector indexing allows scaling to 500,000+ complaints with sub-second cross-bureau correlation.
-"""
-
-    with open(RESULTS_PATH, "w", encoding="utf-8") as f:
-        f.write(md_content)
-
-    print(f"Evaluation report successfully written to: {RESULTS_PATH}")
-    return True
 
 if __name__ == "__main__":
     run_evaluation()

@@ -9,7 +9,8 @@ from app.schemas.user import UserCreate, UserUpdate, UserResponse
 from app.schemas.admin import (
     BureauCreate, BureauResponse, RoutingRuleCreate,
     RoutingRuleResponse, SLAConfigUpdate,
-    SLAConfigResponse, AuditLogResponse, ReassignComplaintRequest
+    SLAConfigResponse, AuditLogResponse, ReassignComplaintRequest,
+    SimilarityThresholdsUpdate, SimilarityThresholdsResponse,
 )
 from app.repositories.admin import (
     list_audit_logs as query_audit_logs,
@@ -34,10 +35,43 @@ from app.services.cases import (
     InvalidCaseTransition,
     reassign_case,
 )
+from app.services.similarity import (
+    get_similarity_thresholds,
+    update_similarity_thresholds,
+)
 
 router = APIRouter(prefix="/admin", tags=["Admin Operations"])
 
 admin_only = require_permission("admin.manage")
+
+
+@router.get(
+    "/similarity-thresholds", response_model=SimilarityThresholdsResponse
+)
+def read_similarity_thresholds(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_only),
+):
+    return get_similarity_thresholds(db)
+
+
+@router.put(
+    "/similarity-thresholds", response_model=SimilarityThresholdsResponse
+)
+def change_similarity_thresholds(
+    thresholds: SimilarityThresholdsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_only),
+):
+    return update_similarity_thresholds(
+        db,
+        high_threshold=thresholds.high_threshold,
+        medium_threshold=thresholds.medium_threshold,
+        low_threshold=thresholds.low_threshold,
+        actor=current_user,
+        ip_address=get_client_ip(request),
+    )
 
 # --- Users Management ---
 @router.get("/users", response_model=List[UserResponse])

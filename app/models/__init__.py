@@ -10,6 +10,7 @@ from app.models.audit import AuditLog
 from app.models.case_group import CaseGroup, CaseGroupMember
 from app.models.rules import RoutingRule, SLAConfig
 from app.models.notification import Notification, Feedback
+from app.models.similarity import SimilarityThresholdConfig
 
 __all__ = [
     "Base",
@@ -33,5 +34,6 @@ __all__ = [
     "RoutingRule",
     "SLAConfig",
     "Notification",
-    "Feedback"
+    "Feedback",
+    "SimilarityThresholdConfig",
 ]

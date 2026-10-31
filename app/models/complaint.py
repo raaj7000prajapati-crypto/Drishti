@@ -146,6 +146,7 @@ class CaseLink(Base):
     similarity_score = Column(Float, nullable=False)
     similarity_bucket = Column(String(20), nullable=False)  # High, Medium, Low, Minimal
     shared_keywords = Column(Text, nullable=True)
+    shared_metadata = Column(JSON, nullable=True)
     status = Column(String(20), default="SUGGESTED", nullable=False)  # SUGGESTED, CONFIRMED, REJECTED
     decided_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     decided_at = Column(DateTime, nullable=True)

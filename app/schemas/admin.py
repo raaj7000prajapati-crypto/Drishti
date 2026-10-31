@@ -1,6 +1,6 @@
 from typing import Optional, List
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from app.models.user import Role
 
 class BureauCreate(BaseModel):
@@ -83,3 +83,23 @@ class ReassignComplaintRequest(BaseModel):
     bureau_id: int
     official_id: Optional[int] = None
     reason: Optional[str] = None
+
+
+class SimilarityThresholdsUpdate(BaseModel):
+    high_threshold: float = Field(ge=0, le=1)
+    medium_threshold: float = Field(ge=0, le=1)
+    low_threshold: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_order(self):
+        if not (
+            self.low_threshold
+            < self.medium_threshold
+            < self.high_threshold
+        ):
+            raise ValueError("Thresholds must satisfy low < medium < high.")
+        return self
+
+
+class SimilarityThresholdsResponse(SimilarityThresholdsUpdate):
+    updated_at: Optional[datetime] = None

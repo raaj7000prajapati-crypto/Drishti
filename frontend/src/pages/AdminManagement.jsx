@@ -11,17 +11,23 @@ import {
   Check,
   X,
   ShieldCheck,
-  Search
+  Search,
+  Sparkles
 } from 'lucide-react';
 
 export default function AdminManagement() {
-  const [activeTab, setActiveTab] = useState('rules'); // rules, users, bureaus, sla
+  const [activeTab, setActiveTab] = useState('rules');
 
   // State
   const [users, setUsers] = useState([]);
   const [bureaus, setBureaus] = useState([]);
   const [rules, setRules] = useState([]);
   const [slaConfigs, setSLAConfigs] = useState([]);
+  const [similarityThresholds, setSimilarityThresholds] = useState({
+    high_threshold: 0.8,
+    medium_threshold: 0.5,
+    low_threshold: 0.3,
+  });
   const [loading, setLoading] = useState(false);
 
   // Forms
@@ -44,16 +50,18 @@ export default function AdminManagement() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [uRes, bRes, rRes, sRes] = await Promise.all([
+      const [uRes, bRes, rRes, sRes, tRes] = await Promise.all([
         adminAPI.getUsers(),
         adminAPI.getBureaus(),
         adminAPI.getRules(),
         adminAPI.getSLA(),
+        adminAPI.getSimilarityThresholds(),
       ]);
       setUsers(uRes.data);
       setBureaus(bRes.data);
       setRules(rRes.data);
       setSLAConfigs(sRes.data);
+      setSimilarityThresholds(tRes.data);
       if (bRes.data.length > 0) {
         setNewRuleBureauId(bRes.data[0].id);
         setNewUserBureauId(bRes.data[0].id);
@@ -130,6 +138,20 @@ export default function AdminManagement() {
     }
   };
 
+  const handleUpdateSimilarityThresholds = async (e) => {
+    e.preventDefault();
+    try {
+      await adminAPI.updateSimilarityThresholds({
+        high_threshold: Number(similarityThresholds.high_threshold),
+        medium_threshold: Number(similarityThresholds.medium_threshold),
+        low_threshold: Number(similarityThresholds.low_threshold),
+      });
+      loadData();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to update similarity thresholds');
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
       {/* Page Header */}
@@ -191,6 +213,16 @@ export default function AdminManagement() {
           }`}
         >
           <Clock className="w-4 h-4" /> SLA Escalation Configs ({slaConfigs.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('similarity')}
+          className={`px-4 py-2.5 rounded-t-lg transition flex items-center gap-1.5 ${
+            activeTab === 'similarity'
+              ? 'bg-white border-t border-x border-slate-200 text-amber-600 border-b-2 border-b-transparent -mb-[1px]'
+              : 'text-slate-500 hover:text-slate-900'
+          }`}
+        >
+          <Sparkles className="w-4 h-4" /> Similarity thresholds
         </button>
       </div>
 
@@ -406,6 +438,57 @@ export default function AdminManagement() {
             </table>
           </div>
         </div>
+      )}
+
+      {activeTab === 'similarity' && (
+        <form
+          onSubmit={handleUpdateSimilarityThresholds}
+          className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4"
+        >
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Related-case match buckets</h2>
+            <p className="text-xs text-slate-500">
+              Set the minimum hybrid similarity score for High, Medium, and Low matches.
+              Lower-scoring matches are labelled Minimal.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {[
+              ['high_threshold', 'High minimum'],
+              ['medium_threshold', 'Medium minimum'],
+              ['low_threshold', 'Low minimum'],
+            ].map(([field, label]) => (
+              <label key={field} className="text-xs font-semibold text-slate-700">
+                {label}
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  required
+                  value={similarityThresholds[field]}
+                  onChange={(event) =>
+                    setSimilarityThresholds((current) => ({
+                      ...current,
+                      [field]: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"
+                  aria-label={label}
+                />
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-slate-500">
+            Values must be ordered Low &lt; Medium &lt; High. Changes are audit logged.
+          </p>
+          <button
+            type="submit"
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-lg"
+          >
+            Save similarity thresholds
+          </button>
+        </form>
       )}
 
       {/* --- ADD RULE MODAL --- */}

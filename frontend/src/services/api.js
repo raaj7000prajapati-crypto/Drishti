@@ -100,6 +100,9 @@ export const adminAPI = {
   deleteRule: (id) => api.delete(`/admin/rules/${id}`),
   getSLA: () => api.get('/admin/sla'),
   updateSLA: (priority, data) => api.put(`/admin/sla/${priority}`, data),
+  getSimilarityThresholds: () => api.get('/admin/similarity-thresholds'),
+  updateSimilarityThresholds: (data) =>
+    api.put('/admin/similarity-thresholds', data),
   reassignComplaint: (id, data) => api.post(`/admin/complaints/${id}/reassign`, data),
   getAuditLogs: (params) => api.get('/admin/audit-logs', { params }),
   verifyAuditLogChain: () => api.get('/admin/audit-logs/verify'),

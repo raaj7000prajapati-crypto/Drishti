@@ -208,6 +208,7 @@ def decide_suggested_link(
         similarity_score=link.similarity_score,
         similarity_bucket=link.similarity_bucket,
         shared_keywords=link.shared_keywords if can_view_both else None,
+        shared_metadata=link.shared_metadata if can_view_both else None,
         status=link.status,
         decided_at=link.decided_at,
         decided_by_name=current_user.full_name

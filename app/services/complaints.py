@@ -119,6 +119,7 @@ def get_complaint_detail_response(
                 similarity_score=link.similarity_score,
                 similarity_bucket=link.similarity_bucket,
                 shared_keywords=link.shared_keywords if is_visible else None,
+                shared_metadata=link.shared_metadata if is_visible else None,
                 status=link.status,
                 decided_at=link.decided_at,
                 decided_by_name=link.decided_by.full_name if link.decided_by else None,
