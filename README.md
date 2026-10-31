@@ -227,11 +227,13 @@ npm audit --audit-level=high
 The GitHub Actions workflow runs the backend pytest suite and pip-audit, plus
 frontend lint, production build, and npm audit. The pytest suite includes
 role-denial, object-authorization, refresh-token, upload-validation,
-security-header, audit-integrity, and workflow tests. There is no automated
-browser end-to-end suite. The Locust report in
-[docs/PERFORMANCE.md](./docs/PERFORMANCE.md) is a measured local load-test
-smoke test, not production capacity validation. The synthetic ML evaluation measures TF-IDF, sentence-embedding, and hybrid
-metrics from the labelled CSV; see [ml/results.md](./ml/results.md).
+security-header, audit-integrity, and workflow tests. CI also runs a Playwright
+browser flow for complaint filing, routing, cross-bureau case matching,
+notification, and closure. The measured local Locust results in
+[docs/PERFORMANCE.md](./docs/PERFORMANCE.md) are smoke tests, not production
+capacity validation. The synthetic ML evaluation measures TF-IDF,
+sentence-embedding, and hybrid metrics from the labelled CSV; see
+[ml/results.md](./ml/results.md).
 
 ## Security notes
 
@@ -242,5 +244,7 @@ supply a unique `SECRET_KEY`, `APP_ENV=production`, database credentials, and
 an explicit `BACKEND_CORS_ORIGINS` value through protected environment
 configuration. Refresh tokens are stored in an httpOnly cookie and rotated
 server-side; uploaded files are served only through authenticated,
-complaint-authorized endpoints. Login lockout currently uses process memory
-and is not shared across multiple workers or restarts.
+complaint-authorized endpoints. Login lockout and dashboard-cache state use
+Redis when available; the process-local development fallback is not shared
+across workers or restarts. Production requests that require Redis fail
+explicitly when it is unavailable.

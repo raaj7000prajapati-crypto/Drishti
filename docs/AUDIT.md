@@ -6,7 +6,7 @@ original findings for historical context.
 
 | Area | Status | Evidence and gap |
 |---|---|---|
-| RBAC | Partial | A central role-permission matrix and object checks now scope complainants to their own cases and officials to their bureau; linked-case decisions require access to both cases. Admins retain global access. New denial tests cover complaint reads/actions, files, notifications, reports, analytics, and admin routes. This is not yet a formal exhaustive test of every route/role pair. |
+| RBAC | Partial | A central role-permission matrix and object checks scope complainants to their own cases and officials to their bureau. An official who can access a case can review its related-case summary; officials from either involved bureau can decide the link. Unrelated users cannot. Admins retain global access. Denial tests cover complaint reads/actions, files, notifications, reports, analytics, and admin routes, but not every route/role pair. |
 | Audit log | Partial | Database triggers block updates and deletes in SQLite and PostgreSQL. Entries are SHA-256 hash-chained and admins can verify the chain from the API/UI. Existing rows are chained on the first startup that adds the hash columns. The implementation is not an external/WORM audit store, and SQLite multi-process chain writes are not coordinated by a database-wide lock. |
 | SLA escalation | Partial | An in-process APScheduler job marks overdue cases through the case state machine, writes a timeline event and chained audit entry, and notifies admins. It is not persistent/distributed. |
 | AI correlation | Done | Suggestions combine configurable TF-IDF and sentence-embedding cosine scores. Multilingual model selection is supported; model/version-keyed embeddings are cached. If the configured model cannot load or inference fails, the affected score falls back to TF-IDF and a warning is logged. |
@@ -17,14 +17,14 @@ original findings for historical context.
 | Determination, closure, and feedback | Done | Accepted/rejected determinations are required to close a case. Closure metadata, read-only checks, notifications, and post-closure feedback are implemented. |
 | Health and metrics | Partial | `/health` checks the database, and `/metrics` returns aggregate values as JSON. There is no separate `/ready` endpoint or Prometheus text exposition. |
 | Case state machine | Done | A transition policy rejects illegal transitions with HTTP 409, requires Accepted/Rejected before closure, and records each transition in the timeline and audit chain. Tests cover allowed/forbidden transitions and the information-request and closure workflows. |
-| Layered architecture | Partial | Intake, case workflow, case-link decisions, SLA escalation, complaint query/response assembly, and admin configuration operations use service/repository modules. Authentication, analytics, notifications, and report routes still contain database work. |
+| Layered architecture | Partial | Routers delegate database operations and workflows to services/repositories, including authentication, analytics, notifications, reports, intake, case workflow, and admin configuration. Some services still query SQLAlchemy directly, so the repository boundary is not universal. |
 | Database migrations | Done | Alembic has a generated baseline for current metadata, and the backend upgrades before seeding. The initial migration also creates newly modelled tables on databases previously bootstrapped with `create_all`; no tables or data are dropped. |
-| Hybrid similarity and explainability | Done | Related-case links store a weighted hybrid score, configurable bucket, shared keywords, and exact shared institution/category/location metadata. The case detail panel shows the score and reasons only when the caller can see both cases. Admins can update bucket thresholds through the API and admin UI; updates are audit logged. |
-| Evaluation quality | Partial | `ml/dataset.csv` has 84 synthetic labelled pairs, including Hindi, Hindi-English, and Hinglish examples. `ml/evaluate.py` computes real precision/recall/F1 and confusion matrices. In this environment the multilingual sentence model could not load, so sentence-embedding and hybrid metrics are explicitly skipped; only measured TF-IDF results are published in `ml/results.md`. The synthetic dataset is not a production accuracy estimate. |
-| Security hardening | Partial | Access tokens are short-lived PyJWT tokens; refresh tokens rotate and are revoked server-side through an httpOnly SameSite cookie. Uploads use random storage names, extension/size/signature validation, and authenticated case-scoped downloads; public static serving was removed. The role matrix/object checks, login lockout, production secret guard, security headers, environment-driven CORS, and hash-chain verification are implemented. Login throttling is in-process and not distributed, and exhaustive route-role coverage remains. |
-| Scalability | Partial | Dashboard aggregates use a configurable 1-60 second, process-local TTL cache with per-key miss coalescing. A 100-user/5,000-case local Locust run is recorded in `docs/PERFORMANCE.md`; it is a localhost SQLite smoke test, not a production capacity claim. Other lists remain offset-paginated or unbounded, and correlation/SLA work remains in-process. |
-| UI and accessibility | Partial | Shared loading/empty/error primitives, role-aware navigation, accessible notification controls, and a reusable case timeline are implemented. Screenshots from the running app are checked in under `docs/screenshots/`. Keyboard/screen-reader behavior and all role workflows do not yet have automated browser coverage. |
-| CI and end-to-end coverage | Partial | GitHub Actions runs pytest, pip-audit, frontend lint/build, and npm audit. The test suite covers core authorization and workflow cases, but there is no browser end-to-end suite or coverage threshold. |
+| Hybrid similarity and explainability | Done | Related-case links store a weighted hybrid score, configurable bucket, shared keywords, and shared metadata. Officials who can access the source case see the related-case summary and reasons; officials from either linked bureau can decide the suggestion. Admins can update bucket thresholds through the API and UI, with audit entries. |
+| Evaluation quality | Partial | `ml/dataset.csv` contains 84 synthetic labelled pairs, including Hindi, Hindi-English, and Hinglish. The multilingual model loaded and `ml/evaluate.py` measured TF-IDF, sentence-embedding, and hybrid precision/recall/F1 and confusion matrices. The in-sample hybrid result is F1 0.9143 with 0.65 TF-IDF / 0.35 embedding weights; this small synthetic set is not independent or production validation. |
+| Security hardening | Partial | Access tokens are short-lived PyJWT tokens; refresh tokens rotate and are revoked server-side through an httpOnly SameSite cookie. Upload validation and case-scoped downloads, the role matrix/object checks, production secret guard, security headers, CORS configuration, and hash-chain verification are implemented. Login lockout and per-IP rate limiting use Redis; development falls back to process-local memory, while production returns 503 when shared state is unavailable. Route/role coverage is not exhaustive. |
+| Scalability | Partial | Dashboard aggregates use a configurable 1-60 second Redis TTL cache, with a process-local fallback in development. A 100-user, 5,000-case, two-worker Locust run is recorded in `docs/PERFORMANCE.md`; Redis was unavailable for that run, and seven connection-aborted requests were observed. It is a localhost SQLite smoke test, not production capacity evidence. Other lists remain offset-paginated or unbounded, and correlation/SLA work remains in-process. |
+| UI and accessibility | Partial | Shared loading/empty/error primitives, role-aware navigation, accessible notification controls, and a reusable case timeline are implemented. Five real screenshots from the running app are checked in under `docs/screenshots/`. The Playwright E2E covers the requested complaint-to-closure path, but keyboard/screen-reader behavior and all role workflows are not covered. |
+| CI and end-to-end coverage | Partial | GitHub Actions runs pytest, pip-audit, frontend lint/build, npm audit, and a Playwright Chromium workflow for complaint filing, routing, cross-bureau matching, notification, and closure. The E2E passed locally; the GitHub-hosted workflow has not been run in this session. There is no coverage threshold. |
 
 ## Phase 0 findings
 
@@ -49,7 +49,8 @@ original findings for historical context.
 - Audit hash-chain changes are compatible with existing databases through a
   startup backfill when the chain columns are first added; this startup schema
   adjustment is not a replacement for the pending Alembic migration work.
-- Login attempt and lockout state is currently process-local.
+- Login attempt and lockout state was originally process-local; it now uses
+  Redis with a development-only in-memory fallback.
 
 ## Phase B implementation notes
 
@@ -80,10 +81,10 @@ original findings for historical context.
 - Admins can configure the High/Medium/Low boundaries. Stored case-link
   explanations include shared keywords and exact shared metadata, which the
   API only returns when the current user can view both cases.
-- The evaluation script now validates the labelled CSV and reports real
-  confusion matrices. The current report omits sentence-model and hybrid
-  metrics because `sentence-transformers` is unavailable in the validation
-  environment; this remains a limitation until measured with a loadable model.
+- The evaluation script validates the labelled CSV and reports real TF-IDF,
+  sentence-embedding, and hybrid metrics/confusion matrices. The multilingual
+  model was loaded for the measured report; results remain exploratory and
+  in-sample.
 - At Phase C completion, load testing, dashboard caching, screenshot capture,
   and the remaining UI/CI work were outstanding; Phase D progress and limits
   are recorded below.
@@ -92,17 +93,20 @@ original findings for historical context.
 
 - Analytics responses are cached for `DASHBOARD_CACHE_TTL_SECONDS` (default
   10; permitted range 1-60). Keys include the caller identity and query filters,
-  and concurrent misses for one key share a computation. The cache is in-memory
-  per process and expires without explicit write invalidation.
+  and Redis stores the TTL entries across workers. Without Redis in
+  development, the cache falls back to process-local memory; production
+  requests fail explicitly if Redis is unavailable.
 - `scripts/performance/seed_5000.py` refuses non-SQLite databases and requires
   an explicitly opted-in database filename containing `perf`. The Locust run
-  exercises the dashboard and 50-row complaint list; measured results and
-  environment limitations are in `docs/PERFORMANCE.md`.
+  exercises the dashboard and 50-row complaint list with two workers; measured
+  results, observed failures, and the lack of Redis during the run are in
+  `docs/PERFORMANCE.md`.
 - The React UI now has reusable page-state/status components, role-specific
   mobile and desktop navigation, notification loading/error states, and a
-  dedicated case timeline component. Two screenshots were captured from the
-  running Vite app using synthetic demo data.
+  dedicated case timeline component. Five screenshots were captured from the
+  running app using synthetic demo data. The Playwright E2E covers the requested
+  complaint, routing, match explanation, notification, and closure workflow.
 - The CI workflow is configured but has not been executed by GitHub Actions in
-  this local session. Local pytest, lint/build, and dependency audits passed;
-  oxlint continues to report pre-existing React-effect warnings in several
-  existing pages.
+  this local session. Local backend tests, frontend lint/build, dependency
+  audit, and Playwright E2E passed; oxlint reports existing warnings in
+  unrelated frontend code.
