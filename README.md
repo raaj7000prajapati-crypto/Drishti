@@ -170,9 +170,15 @@ the embedding model):
 These are real screenshots captured from the running local app with synthetic
 demo data; they are illustrative, not production evidence.
 
-![Drishti public portal](./docs/screenshots/public-portal.png)
+![Complainant dashboard](./docs/screenshots/complainant-dashboard.png)
+
+![File complaint page](./docs/screenshots/file-complaint.png)
+
+![Officer case workspace with related-case explanation](./docs/screenshots/officer-related-cases.png)
 
 ![Administrator analytics dashboard](./docs/screenshots/admin-dashboard.png)
+
+![Audit integrity verification result](./docs/screenshots/audit-integrity-verified.png)
 
 ## API overview
 
