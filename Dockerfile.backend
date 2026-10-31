@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY app/ ./app/
+COPY ml/ ./ml/
+COPY tests/ ./tests/
+COPY pytest.ini .
+
+# Create uploads storage folder
+RUN mkdir -p uploads
+
+EXPOSE 8000
+
+# Run entrypoint script that seeds DB and launches FastAPI server
+CMD ["sh", "-c", "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

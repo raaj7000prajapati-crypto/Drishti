@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: drishti-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: drishti
+      POSTGRES_PASSWORD: drishti123
+      POSTGRES_DB: drishtidb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drishti -d drishtidb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: drishti-mailhog
+    restart: always
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+    logging:
+      driver: 'none'
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: drishti-backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://drishti:drishti123@db:5432/drishtidb
+      - SECRET_KEY=drishti-super-secret-key-sih-2026-prod
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - STORAGE_DIR=/app/uploads
+      - SIMILARITY_HIGH_THRESHOLD=0.80
+      - SIMILARITY_MEDIUM_THRESHOLD=0.50
+      - SIMILARITY_LOW_THRESHOLD=0.30
+      - SLA_HIGH_DAYS=3
+      - SLA_MEDIUM_DAYS=7
+      - SLA_LOW_DAYS=14
+      - SLA_URGENT_DAYS=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_uploads:/app/uploads
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: drishti-frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  backend_uploads:
