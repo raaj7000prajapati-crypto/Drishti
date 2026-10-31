@@ -70,8 +70,9 @@ Docker Compose starts PostgreSQL, MailHog, the backend, and the frontend:
 docker compose up --build
 ```
 
-The backend seeds prototype data when it starts. Database schema creation and
-migrations are still being improved; use only disposable data for development.
+The backend runs `alembic upgrade head` before seeding prototype data. On
+existing databases previously created with SQLAlchemy `create_all`, the initial
+migration creates any newly modelled tables without dropping existing data.
 
 | Service | URL |
 |---|---|
@@ -83,13 +84,14 @@ migrations are still being improved; use only disposable data for development.
 ### Local development
 
 Use Python 3.11 for the documented backend environment. From the repository
-root, create and activate a virtual environment, install dependencies, seed a
-local SQLite database, and start the API:
+root, create and activate a virtual environment, install dependencies, apply
+migrations, seed a local SQLite database, and start the API:
 
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+alembic upgrade head
 python -m app.seed
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -127,7 +129,8 @@ local demonstrations only:
   and authenticated complaint-scoped downloads
 - In-app notifications and SMTP email attempts
 - Complaint timelines, information requests and responses, annotations,
-  determinations, closure, and post-closure feedback
+  determinations, state-validated closure, and post-closure feedback
+- Confirmed related cases are joined in explicit case groups
 - Similarity suggestions, a basic shared-keyword explanation, and official
   confirm/reject decisions
 - SLA deadline calculation and an in-process overdue-case scheduler
@@ -137,10 +140,10 @@ local demonstrations only:
 - Admin user, bureau, routing-rule, and SLA configuration operations
 - Analytics, CSV/PDF report routes, and JSON health/metrics endpoints
 
-These features have important limitations: workflow transitions are not yet
-validated by a state machine; similarity does not use a hybrid score; login
-lockout state is in-process; and production deployment, migrations, and
-performance still need further hardening. See [docs/AUDIT.md](./docs/AUDIT.md).
+These features have important limitations: some non-case routers still perform
+database work directly; similarity does not use a hybrid score; login lockout
+state is in-process; and production deployment and performance still need
+further hardening. See [docs/AUDIT.md](./docs/AUDIT.md).
 
 ## API overview
 

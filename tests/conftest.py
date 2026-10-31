@@ -2,24 +2,34 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import app.core.database as database
+import app.main as main_module
 from app.core.database import Base, get_db, setup_audit_triggers
-from app.main import app
 from app.core.security import create_access_token
 from app.models.user import User, Role
 from app.models.bureau import Bureau
 
+app = main_module.app
 TEST_DB_URL = "sqlite:///./test_drishti.db"
 test_engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
+    original_database_engine = database.engine
+    original_app_engine = main_module.engine
+    database.engine = test_engine
+    main_module.engine = test_engine
     Base.metadata.drop_all(bind=test_engine)
     Base.metadata.create_all(bind=test_engine)
     with test_engine.connect() as conn:
         setup_audit_triggers(conn)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
+    try:
+        yield
+    finally:
+        Base.metadata.drop_all(bind=test_engine)
+        database.engine = original_database_engine
+        main_module.engine = original_app_engine
 
 @pytest.fixture
 def db_session():

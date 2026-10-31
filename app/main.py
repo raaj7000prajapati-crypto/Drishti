@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.config import settings
-from app.core.database import Base, engine, get_db, setup_audit_triggers
+from app.core.database import engine, get_db, setup_audit_triggers
 from app.core.logging import logger
 from app.core.permissions import require_permission, validate_production_security
 from app.api import api_v1_router
@@ -13,12 +13,11 @@ from app.services.sla import start_sla_scheduler, shutdown_sla_scheduler
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_production_security()
-    # Startup: create tables and triggers
-    logger.info("Initializing Drishti AICTE database schemas...")
-    Base.metadata.create_all(bind=engine)
+    # Schema creation and upgrades are managed by Alembic before the app starts.
+    logger.info("Installing database audit safeguards...")
     with engine.connect() as conn:
         setup_audit_triggers(conn)
-    logger.info("Database initialized successfully.")
+    logger.info("Database audit safeguards installed.")
 
     # Start APScheduler for SLA Escalations
     start_sla_scheduler()

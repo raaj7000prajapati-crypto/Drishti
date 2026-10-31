@@ -7,6 +7,7 @@ from app.models.complaint import (
     Annotation, CaseLink, ComplaintEmbedding
 )
 from app.models.audit import AuditLog
+from app.models.case_group import CaseGroup, CaseGroupMember
 from app.models.rules import RoutingRule, SLAConfig
 from app.models.notification import Notification, Feedback
 
@@ -27,6 +28,8 @@ __all__ = [
     "CaseLink",
     "ComplaintEmbedding",
     "AuditLog",
+    "CaseGroup",
+    "CaseGroupMember",
     "RoutingRule",
     "SLAConfig",
     "Notification",

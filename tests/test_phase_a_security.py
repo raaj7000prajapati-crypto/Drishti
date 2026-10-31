@@ -27,9 +27,16 @@ from app.models.complaint import (
     Determination,
     InformationRequest,
 )
+from app.models.audit import AuditLog
+from app.models.case_group import CaseGroup, CaseGroupMember
 from app.models.notification import Notification
 from app.models.user import RefreshToken, Role, User
 from app.services.audit import verify_audit_chain
+from app.services.cases import (
+    InvalidCaseTransition,
+    determine_case,
+    transition_case,
+)
 
 
 @pytest.fixture
@@ -428,6 +435,251 @@ def test_officer_case_detail_hides_cross_bureau_link_records(client, security_re
     )
     assert response.status_code == 200
     assert response.json()["suggested_links"] == []
+
+
+def test_confirmed_cross_bureau_links_merge_case_groups(
+    client, db_session, security_records
+):
+    records = security_records
+    third_case = Complaint(
+        receipt_id=f"DRI-{uuid.uuid4().hex[:10]}-THIRD",
+        complainant_id=records.owner.id,
+        institution_name="Third institution",
+        institution_state="State",
+        institution_city="City",
+        category="Other",
+        subject="Another test case",
+        description="Another test complaint",
+        bureau_id=records.own_case.bureau_id,
+        status=ComplaintStatus.NEW,
+    )
+    db_session.add(third_case)
+    db_session.flush()
+    second_link = CaseLink(
+        source_complaint_id=records.foreign_case.id,
+        target_complaint_id=third_case.id,
+        similarity_score=0.65,
+        similarity_bucket="Medium",
+    )
+    db_session.add(second_link)
+    db_session.commit()
+
+    for link_id in (records.link.id, second_link.id):
+        response = client.post(
+            f"/api/v1/officials/links/{link_id}/decide?decision=CONFIRMED",
+            headers=auth_headers(records.admin),
+        )
+        assert response.status_code == 200
+
+    db_session.expire_all()
+    memberships = db_session.query(CaseGroupMember).filter(
+        CaseGroupMember.complaint_id.in_(
+            [records.own_case.id, records.foreign_case.id, third_case.id]
+        )
+    ).all()
+    assert len(memberships) == 3
+    assert len({membership.case_group_id for membership in memberships}) == 1
+    assert db_session.query(CaseGroup).count() == 1
+
+
+def test_case_state_machine_allows_forward_workflow_and_records_each_transition(
+    db_session, security_records
+):
+    complaint = security_records.own_case
+    audit_count = db_session.query(AuditLog).count()
+    expected_statuses = [
+        ComplaintStatus.ASSIGNED,
+        ComplaintStatus.IN_PROGRESS,
+        ComplaintStatus.AWAITING_INFO,
+        ComplaintStatus.IN_PROGRESS,
+        ComplaintStatus.OVERDUE,
+    ]
+    for next_status in expected_statuses:
+        transition_case(
+            db_session,
+            complaint.id,
+            next_status,
+            actor=security_records.officer_a,
+            ip_address="127.0.0.1",
+        )
+        assert complaint.status == next_status
+
+    events = [
+        event
+        for event in complaint.events
+        if event.event_type == "STATUS_CHANGED"
+    ]
+    assert len(events) == len(expected_statuses)
+    assert db_session.query(AuditLog).count() == audit_count + len(expected_statuses)
+
+
+def test_case_state_machine_rejects_illegal_transition_without_side_effects(
+    db_session, security_records
+):
+    complaint = security_records.own_case
+    audit_count = db_session.query(AuditLog).count()
+    with pytest.raises(InvalidCaseTransition, match="Cannot transition a case"):
+        transition_case(
+            db_session,
+            complaint.id,
+            ComplaintStatus.CLOSED,
+            actor=security_records.officer_a,
+            ip_address="127.0.0.1",
+        )
+    db_session.expire_all()
+    assert db_session.query(Complaint).filter_by(id=complaint.id).one().status == ComplaintStatus.NEW
+    assert db_session.query(AuditLog).count() == audit_count
+
+
+def test_illegal_status_route_returns_conflict_without_mutating_case(
+    client, db_session, security_records
+):
+    complaint = security_records.own_case
+    audit_count = db_session.query(AuditLog).count()
+    response = client.post(
+        f"/api/v1/officials/cases/{complaint.id}/status",
+        json={"status": ComplaintStatus.CLOSED.value},
+        headers=auth_headers(security_records.admin),
+    )
+    assert response.status_code == 409
+    assert "Cannot transition" in response.json()["detail"]
+    db_session.refresh(complaint)
+    assert complaint.status == ComplaintStatus.NEW
+    assert db_session.query(AuditLog).count() == audit_count
+
+
+def test_officer_and_case_owner_complete_information_request_workflow(
+    client, db_session, security_records
+):
+    records = security_records
+    transition_case(
+        db_session,
+        records.own_case.id,
+        ComplaintStatus.ASSIGNED,
+        actor=records.officer_a,
+        ip_address="127.0.0.1",
+    )
+    response = client.post(
+        f"/api/v1/officials/cases/{records.own_case.id}/request-info",
+        json={"question": "Please provide supporting details."},
+        headers=auth_headers(records.officer_a),
+    )
+    assert response.status_code == 200
+    request_id = response.json()["id"]
+    db_session.refresh(records.own_case)
+    assert records.own_case.status == ComplaintStatus.AWAITING_INFO
+
+    admin_response = client.post(
+        f"/api/v1/complaints/{records.own_case.id}/info-respond?request_id={request_id}",
+        json={"response": "Administrative response"},
+        headers=auth_headers(records.admin),
+    )
+    assert admin_response.status_code == 403
+
+    owner_response = client.post(
+        f"/api/v1/complaints/{records.own_case.id}/info-respond?request_id={request_id}",
+        json={"response": "Here are the supporting details."},
+        headers=auth_headers(records.owner),
+    )
+    assert owner_response.status_code == 200
+    db_session.refresh(records.own_case)
+    assert records.own_case.status == ComplaintStatus.IN_PROGRESS
+    assert owner_response.json()["status"] == "RESPONDED"
+
+
+def test_determination_closes_case_and_archives_it(db_session, security_records):
+    complaint = security_records.own_case
+    actor = security_records.officer_a
+    transition_case(
+        db_session,
+        complaint.id,
+        ComplaintStatus.ASSIGNED,
+        actor=actor,
+        ip_address="127.0.0.1",
+    )
+    transition_case(
+        db_session,
+        complaint.id,
+        ComplaintStatus.IN_PROGRESS,
+        actor=actor,
+        ip_address="127.0.0.1",
+    )
+    audit_count = db_session.query(AuditLog).count()
+
+    determine_case(
+        db_session,
+        complaint.id,
+        Determination.ACCEPTED,
+        "Corrective action completed.",
+        actor,
+        "127.0.0.1",
+    )
+
+    db_session.refresh(complaint)
+    assert complaint.status == ComplaintStatus.CLOSED
+    assert complaint.determination == Determination.ACCEPTED
+    assert complaint.is_archived is True
+    assert complaint.closed_at is not None
+    assert db_session.query(AuditLog).count() == audit_count + 1
+    assert complaint.events[-1].event_type == "CLOSED"
+
+
+def test_admin_configuration_routes_use_services_and_return_workload_data(
+    client, security_records
+):
+    records = security_records
+    headers = auth_headers(records.admin)
+    test_priority = f"phaseb{uuid.uuid4().hex[:6]}"
+
+    bureaus_response = client.get("/api/v1/admin/bureaus", headers=headers)
+    assert bureaus_response.status_code == 200
+    bureau_data = next(
+        item for item in bureaus_response.json()
+        if item["id"] == records.own_case.bureau_id
+    )
+    assert bureau_data["official_count"] == 1
+    assert bureau_data["active_complaints_count"] == 1
+
+    user_response = client.post(
+        "/api/v1/admin/users",
+        json={
+            "email": f"new-official-{uuid.uuid4().hex[:8]}@example.test",
+            "password": "Correct-Horse-Battery-1",
+            "full_name": "New Official",
+            "role": Role.OFFICIAL.value,
+            "bureau_id": records.own_case.bureau_id,
+        },
+        headers=headers,
+    )
+    assert user_response.status_code == 200
+    assert user_response.json()["bureau_name"] == records.own_case.bureau.name
+
+    rule_response = client.post(
+        "/api/v1/admin/rules",
+        json={
+            "category": "Fees",
+            "keywords": " tuition, fee ",
+            "target_bureau_id": records.own_case.bureau_id,
+            "priority": 2,
+            "is_active": True,
+        },
+        headers=headers,
+    )
+    assert rule_response.status_code == 200
+    assert rule_response.json()["keywords"] == "tuition, fee"
+    delete_response = client.delete(
+        f"/api/v1/admin/rules/{rule_response.json()['id']}",
+        headers=headers,
+    )
+    assert delete_response.status_code == 200
+
+    sla_response = client.put(
+        f"/api/v1/admin/sla/{test_priority}",
+        json={"max_hours": 48, "escalation_level": "Bureau Head"},
+        headers=headers,
+    )
+    assert sla_response.status_code == 200
+    assert sla_response.json()["max_hours"] == 48
 
 
 def test_only_complainants_can_file_complaints(client, security_records):

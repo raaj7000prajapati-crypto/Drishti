@@ -1,23 +1,30 @@
-from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.storage import storage
 from app.api.deps import get_client_ip
-from app.core.permissions import ensure_complaint_access, require_permission, require_all_complaint_access
+from app.core.permissions import require_permission
 from app.models.user import User, Role
-from app.models.complaint import (
-    Complaint, ComplaintStatus, Determination, ComplaintEvent,
-    InformationRequest, Annotation, CaseLink
-)
+from app.models.complaint import Complaint
 from app.schemas.complaint import (
     StatusUpdate, DeterminationCreate, InfoRequestCreate,
     InfoRequestResponse, AnnotationResponse, CaseLinkResponse
 )
-from app.services.correlation import decide_case_link
-from app.services.notification import create_notification, send_email
-from app.services.audit import log_audit
+from app.services.case_links import (
+    CaseLinkNotFound,
+    LinkedComplaintNotFound,
+    decide_case_link_workflow,
+)
+from app.services.cases import (
+    CaseWorkflowConflict,
+    CaseNotFoundError,
+    InvalidCaseTransition,
+    create_case_annotation,
+    determine_case,
+    request_case_information,
+    transition_case,
+)
 from app.core.logging import logger
 
 router = APIRouter(prefix="/officials", tags=["Official Operations"])
@@ -34,38 +41,23 @@ def update_case_status(
     current_user: User = Depends(official_or_admin)
 ):
     """Update case lifecycle status (e.g., Assigned -> In Progress)."""
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-
-    ensure_complaint_access(current_user, complaint)
-
-    old_status = complaint.status.value
-    complaint.status = status_update.status
-
-    # Record Timeline Event
-    event = ComplaintEvent(
-        complaint_id=complaint.id,
-        actor_id=current_user.id,
-        event_type="STATUS_CHANGED",
-        title=f"Status Changed to {status_update.status.value}",
-        description=status_update.comment or f"Official {current_user.full_name} moved case to {status_update.status.value}."
-    )
-    db.add(event)
-    db.commit()
-
-    # Audit Log
-    log_audit(
-        db=db,
-        action="CASE_STATUS_UPDATED",
-        entity_type="Complaint",
-        entity_id=str(complaint.id),
-        actor_id=current_user.id,
-        actor_email=current_user.email,
-        ip_address=get_client_ip(request),
-        before_state={"status": old_status},
-        after_state={"status": complaint.status.value}
-    )
+    try:
+        complaint = transition_case(
+            db,
+            id,
+            status_update.status,
+            actor=current_user,
+            ip_address=get_client_ip(request),
+            title=f"Status Changed to {status_update.status.value}",
+            description=(
+                status_update.comment
+                or f"Official {current_user.full_name} moved case to {status_update.status.value}."
+            ),
+        )
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Complaint not found") from exc
+    except InvalidCaseTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return {"message": "Status updated successfully", "status": complaint.status.value}
 
@@ -81,74 +73,23 @@ def request_information(
     Stage 3: Request information from the complainant.
     Sets status to 'Awaiting Info' and dispatches notifications & email.
     """
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-
-    ensure_complaint_access(current_user, complaint)
-
-    # Set status to Awaiting Info
-    old_status = complaint.status.value
-    complaint.status = ComplaintStatus.AWAITING_INFO
-
-    info_req = InformationRequest(
-        complaint_id=complaint.id,
-        official_id=current_user.id,
-        question=req_in.question,
-        status="PENDING",
-        requested_at=datetime.now(timezone.utc)
-    )
-    db.add(info_req)
-
-    # Timeline event
-    event = ComplaintEvent(
-        complaint_id=complaint.id,
-        actor_id=current_user.id,
-        event_type="INFO_REQUESTED",
-        title="Clarification Requested by AICTE Official",
-        description=f"Official {current_user.full_name} requested: '{req_in.question}'"
-    )
-    db.add(event)
-    db.commit()
-    db.refresh(info_req)
-
-    # Notify complainant
-    create_notification(
-        db=db,
-        user_id=complaint.complainant_id,
-        title=f"Action Required: Clarification for {complaint.receipt_id}",
-        message=f"AICTE Official requested clarification regarding your grievance: '{req_in.question[:100]}...'",
-        link=f"/cases/{complaint.id}"
-    )
-
-    if complaint.complainant:
-        send_email(
-            to_email=complaint.complainant.email,
-            subject=f"Action Required: Information Requested for AICTE Grievance {complaint.receipt_id}",
-            html_content=f"""
-                <p>Dear {complaint.complainant.full_name},</p>
-                <p>The AICTE reviewing officer for grievance <strong>{complaint.receipt_id}</strong> has requested the following clarification:</p>
-                <blockquote style="background:#f4f4f4; padding:10px; border-left:4px solid #E87722;">
-                    {req_in.question}
-                </blockquote>
-                <p>Please log in to your Drishti dashboard to submit your response.</p>
-            """
+    try:
+        info_req = request_case_information(
+            db, id, req_in.question, current_user, get_client_ip(request)
         )
-
-    # Audit log
-    log_audit(
-        db=db,
-        action="INFO_REQUESTED",
-        entity_type="Complaint",
-        entity_id=str(complaint.id),
-        actor_id=current_user.id,
-        actor_email=current_user.email,
-        ip_address=get_client_ip(request),
-        before_state={"status": old_status},
-        after_state={"status": "Awaiting Info", "question": req_in.question}
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Complaint not found") from exc
+    except InvalidCaseTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return InfoRequestResponse(
+        id=info_req.id,
+        question=info_req.question,
+        complainant_response=info_req.complainant_response,
+        status=info_req.status,
+        requested_at=info_req.requested_at,
+        responded_at=info_req.responded_at,
+        official_name=current_user.full_name,
     )
-
-    return info_req
 
 @router.post("/cases/{id}/annotate", response_model=AnnotationResponse)
 async def add_annotation(
@@ -161,11 +102,6 @@ async def add_annotation(
     current_user: User = Depends(official_or_admin)
 ):
     """Add official case note/annotation with optional attachment."""
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-    ensure_complaint_access(current_user, complaint)
-
     attachment_stored_name = None
     attachment_name = None
 
@@ -174,40 +110,23 @@ async def add_annotation(
         attachment_stored_name = stored_name
         attachment_name = orig_name
 
-    annotation = Annotation(
-        complaint_id=complaint.id,
-        author_id=current_user.id,
-        note=note,
-        attachment_name=attachment_name,
-        attachment_stored_name=attachment_stored_name,
-        is_internal=is_internal
-    )
-    db.add(annotation)
-
-    # Timeline event
-    visibility_label = "Internal Bureau Note" if is_internal else "Official Progress Note"
-    event = ComplaintEvent(
-        complaint_id=complaint.id,
-        actor_id=current_user.id,
-        event_type="ANNOTATION_ADDED",
-        title=f"{visibility_label} Added",
-        description=f"{current_user.full_name}: {note[:100]}..."
-    )
-    db.add(event)
-    db.commit()
-    db.refresh(annotation)
-
-    # Audit Log
-    log_audit(
-        db=db,
-        action="ANNOTATION_ADDED",
-        entity_type="Complaint",
-        entity_id=str(complaint.id),
-        actor_id=current_user.id,
-        actor_email=current_user.email,
-        ip_address=get_client_ip(request),
-        after_state={"annotation_id": annotation.id, "is_internal": is_internal}
-    )
+    try:
+        annotation = create_case_annotation(
+            db,
+            id,
+            current_user,
+            note,
+            is_internal,
+            attachment_name,
+            attachment_stored_name,
+            get_client_ip(request),
+        )
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Complaint not found") from exc
+    except HTTPException:
+        raise
+    except CaseWorkflowConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return AnnotationResponse(
         id=annotation.id,
@@ -232,74 +151,19 @@ def propose_determination(
     Official/Admin accepts or rejects the grievance with formal reasoning.
     Sets status to Closed, archives case as read-only, and notifies complainant.
     """
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-    ensure_complaint_access(current_user, complaint)
-
-    if complaint.status == ComplaintStatus.CLOSED:
-        raise HTTPException(status_code=400, detail="Case is already closed and archived")
-
-    before_state = {
-        "status": complaint.status.value,
-        "determination": complaint.determination.value
-    }
-
-    complaint.status = ComplaintStatus.CLOSED
-    complaint.determination = det_in.determination
-    complaint.determination_reason = det_in.reason
-    complaint.closed_at = datetime.now(timezone.utc)
-    complaint.is_archived = True
-
-    # Timeline event
-    decision_text = "Accepted with Corrective Action" if det_in.determination == Determination.ACCEPTED else "Rejected with Findings"
-    event = ComplaintEvent(
-        complaint_id=complaint.id,
-        actor_id=current_user.id,
-        event_type="CLOSED",
-        title=f"Grievance Closed - {decision_text}",
-        description=f"Determination: {det_in.determination.value}. Reason: {det_in.reason}"
-    )
-    db.add(event)
-    db.commit()
-
-    # Notify Complainant
-    create_notification(
-        db=db,
-        user_id=complaint.complainant_id,
-        title=f"Grievance Closed ({complaint.receipt_id}): {det_in.determination.value}",
-        message=f"Your grievance has been closed with determination: {det_in.determination.value}. Reason: {det_in.reason[:80]}...",
-        link=f"/cases/{complaint.id}"
-    )
-
-    if complaint.complainant:
-        send_email(
-            to_email=complaint.complainant.email,
-            subject=f"AICTE Grievance Closure Notification - {complaint.receipt_id}",
-            html_content=f"""
-                <p>Dear {complaint.complainant.full_name},</p>
-                <p>Your grievance (Receipt No: <strong>{complaint.receipt_id}</strong>) has been resolved and officially closed.</p>
-                <p><strong>Determination:</strong> {det_in.determination.value}</p>
-                <p><strong>Summary of Findings:</strong></p>
-                <blockquote style="background:#f4f4f4; padding:10px; border-left:4px solid #059669;">
-                    {det_in.reason}
-                </blockquote>
-                <p>Please log in to your dashboard to view the full resolution certificate and provide your feedback.</p>
-            """
+    try:
+        determine_case(
+            db,
+            id,
+            det_in.determination,
+            det_in.reason,
+            current_user,
+            get_client_ip(request),
         )
-
-    # Audit log
-    log_audit(
-        db=db,
-        action="CASE_CLOSED_DETERMINATION",
-        entity_type="Complaint",
-        entity_id=str(complaint.id),
-        actor_id=current_user.id,
-        actor_email=current_user.email,
-        ip_address=get_client_ip(request),
-        before_state=before_state,
-        after_state={"determination": det_in.determination.value, "reason": det_in.reason}
-    )
+    except CaseNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Complaint not found") from exc
+    except (InvalidCaseTransition, CaseWorkflowConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return {"message": "Case closed successfully", "determination": det_in.determination.value}
 
@@ -317,43 +181,18 @@ def decide_suggested_link(
     and alert officials across bureaus to eliminate duplicate work.
     """
     client_ip = get_client_ip(request) if request else "127.0.0.1"
-    link_candidate = db.query(CaseLink).filter(CaseLink.id == link_id).first()
-    if not link_candidate:
-        raise HTTPException(status_code=404, detail="Case link not found")
-    if not link_candidate.source_complaint or not link_candidate.target_complaint:
-        raise HTTPException(status_code=404, detail="Linked grievance record not found")
-    require_all_complaint_access(
-        current_user,
-        [link_candidate.source_complaint, link_candidate.target_complaint],
-    )
-    link = decide_case_link(
-        db=db,
-        link_id=link_id,
-        decision=decision,
-        deciding_user=current_user,
-        ip_address=client_ip
-    )
+    try:
+        link = decide_case_link_workflow(
+            db, link_id, decision, current_user, client_ip
+        )
+    except CaseLinkNotFound as exc:
+        raise HTTPException(status_code=404, detail="Case link not found") from exc
+    except LinkedComplaintNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CaseWorkflowConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     source_case = link.source_complaint
     target_case = link.target_complaint
-    # Create timeline event on both cases
-    ev_source = ComplaintEvent(
-        complaint_id=link.source_complaint_id,
-        actor_id=current_user.id,
-        event_type=f"LINK_{decision}",
-        title=f"AI Case Correlation {decision.capitalize()}",
-        description=f"Official {current_user.full_name} {decision.lower()} a related case link (Match score: {int(link.similarity_score * 100)}%)."
-    )
-    db.add(ev_source)
-    
-    ev_target = ComplaintEvent(
-        complaint_id=link.target_complaint_id,
-        actor_id=current_user.id,
-        event_type=f"LINK_{decision}",
-        title=f"Cross-Bureau Link {decision.capitalize()}",
-        description=f"A related case link was {decision.lower()} by {current_user.full_name}."
-    )
-    db.add(ev_target)
-    db.commit()
 
     other_case = target_case if ensure_visible_case(current_user, target_case) else source_case
     can_view_both = current_user.role == Role.ADMIN or (

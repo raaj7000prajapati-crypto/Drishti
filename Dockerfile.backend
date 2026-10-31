@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 COPY ml/ ./ml/
 COPY tests/ ./tests/
 COPY pytest.ini .
@@ -24,5 +26,5 @@ RUN mkdir -p uploads
 
 EXPOSE 8000
 
-# Run entrypoint script that seeds DB and launches FastAPI server
-CMD ["sh", "-c", "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Upgrade the schema, seed reference/demo data, and launch the API.
+CMD ["sh", "-c", "alembic upgrade head && python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

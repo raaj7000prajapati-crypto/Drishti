@@ -1,7 +1,7 @@
 import random
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
-from app.core.database import SessionLocal, Base, engine, setup_audit_triggers
+from app.core.database import SessionLocal
 from app.core.security import get_password_hash
 from app.models.user import User, Role
 from app.models.bureau import Bureau
@@ -220,11 +220,6 @@ SUBJECT_TEMPLATES = [
 def seed_database():
     logger.info("Starting Drishti AICTE database seeding...")
     db = SessionLocal()
-
-    # Create tables & triggers
-    Base.metadata.create_all(bind=engine)
-    with engine.connect() as conn:
-        setup_audit_triggers(conn)
 
     # 1. Seed Bureaus
     bureaus_by_code = {}

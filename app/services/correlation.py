@@ -10,6 +10,7 @@ from app.ml.engine import (
 )
 from app.services.notification import create_notification
 from app.services.audit import log_audit
+from app.services.case_groups import group_confirmed_link
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -143,7 +144,7 @@ def decide_case_link(
     Only confirmed links create a case group and notify the other bureau's official.
     Logs every action in the immutable audit log.
     """
-    link = db.query(CaseLink).filter(CaseLink.id == link_id).first()
+    link = db.query(CaseLink).filter(CaseLink.id == link_id).with_for_update().first()
     if not link:
         raise ValueError(f"Case link {link_id} not found")
 
@@ -153,6 +154,8 @@ def decide_case_link(
     link.status = decision
     link.decided_by_id = deciding_user.id
     link.decided_at = datetime.now(timezone.utc)
+    if decision == "CONFIRMED":
+        group_confirmed_link(db, link, deciding_user.id)
     db.commit()
     db.refresh(link)
 

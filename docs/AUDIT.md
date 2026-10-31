@@ -8,20 +8,20 @@ roadmap intent.
 |---|---|---|
 | RBAC | Partial | A central role-permission matrix and object checks now scope complainants to their own cases and officials to their bureau; linked-case decisions require access to both cases. Admins retain global access. New denial tests cover complaint reads/actions, files, notifications, reports, analytics, and admin routes. This is not yet a formal exhaustive test of every route/role pair. |
 | Audit log | Partial | Database triggers block updates and deletes in SQLite and PostgreSQL. Entries are SHA-256 hash-chained and admins can verify the chain from the API/UI. Existing rows are chained on the first startup that adds the hash columns. The implementation is not an external/WORM audit store, and SQLite multi-process chain writes are not coordinated by a database-wide lock. |
-| SLA escalation | Partial | An in-process APScheduler job marks overdue cases and notifies admins. It is not persistent/distributed, and the dashboard's SQLite query currently fails on mixed naive/aware datetimes. |
+| SLA escalation | Partial | An in-process APScheduler job marks overdue cases through the case state machine, writes a timeline event and chained audit entry, and notifies admins. It is not persistent/distributed. |
 | AI correlation | Partial | Similarity suggestions are stored and cached embeddings are supported. The engine selects sentence embeddings when installed and otherwise uses a fixed-vocabulary TF-IDF fallback; it does not combine both scores. |
 | Notifications | Partial | In-app notifications and SMTP email are implemented. Email failures are logged and swallowed, and delivery is not queued or retried. |
-| Human validation | Partial | Officials can confirm or reject suggestions, with decision records and notifications. Confirmed links do not form explicit case groups, and there is no decision-based threshold calibration. |
+| Human validation | Partial | Officials can confirm or reject suggestions, with decision records, timeline events, notifications, and explicit case groups for confirmed links. There is no decision-based threshold calibration. |
 | Routing rules | Partial | Rule-based bureau selection, a default bureau, least-loaded assignment, and admin rule creation/deletion exist. There is no rule-update endpoint or model-based triage. |
-| Information-request flow | Done | Officials can request information; complainants can respond; timeline events and notifications are recorded. |
-| Determination, closure, and feedback | Partial | Accepted/rejected determinations, closure metadata, a read-only flag, notifications, and post-closure feedback exist. Archive immutability is not enforced across every mutation route. |
+| Information-request flow | Done | Officials can request information; only the case owner can respond. State changes, timeline events, audit entries, and notifications are recorded. |
+| Determination, closure, and feedback | Done | Accepted/rejected determinations are required to close a case. Closure metadata, read-only checks, notifications, and post-closure feedback are implemented. |
 | Health and metrics | Partial | `/health` checks the database, and `/metrics` returns aggregate values as JSON. There is no separate `/ready` endpoint or Prometheus text exposition. |
-| Case state machine | Missing | Statuses are enumerated, but transitions are assigned directly without a transition policy that rejects illegal moves. |
-| Layered architecture | Partial | Service modules exist, but routers still perform substantial query and workflow logic; there is no repository layer. |
-| Database migrations | Missing | The checked-in Alembic revision has empty upgrade/downgrade bodies. Startup creates tables directly with SQLAlchemy metadata. |
+| Case state machine | Done | A transition policy rejects illegal transitions with HTTP 409, requires Accepted/Rejected before closure, and records each transition in the timeline and audit chain. Tests cover allowed/forbidden transitions and the information-request and closure workflows. |
+| Layered architecture | Partial | Intake, case workflow, case-link decisions, SLA escalation, complaint query/response assembly, and admin configuration operations use service/repository modules. Authentication, analytics, notifications, and report routes still contain database work. |
+| Database migrations | Done | Alembic has a generated baseline for current metadata, and the backend upgrades before seeding. The initial migration also creates newly modelled tables on databases previously bootstrapped with `create_all`; no tables or data are dropped. |
 | Hybrid similarity and explainability | Missing | There is no weighted hybrid score or metadata explanation. Shared keywords are returned as a basic explanation. |
 | Evaluation quality | Missing | `ml/dataset.csv` contains 65 pairs. When sentence-transformers is unavailable, the evaluation script generates SBERT-like scores from the labels; the published SBERT metrics are therefore not model measurements. Latency and scale statements in the report are not generated by a benchmark. |
-| Security hardening | Partial | Access tokens are short-lived PyJWT tokens; refresh tokens rotate and are revoked server-side through an httpOnly SameSite cookie. Uploads use random storage names, extension/size/signature validation, and authenticated case-scoped downloads; public static serving was removed. A role matrix/object checks, login lockout, production secret guard, security headers, environment-driven CORS, and hash-chain verification are implemented. Login throttling is in-process and not distributed, and deployment hardening/complete route-role coverage remain. |
+| Security hardening | Partial | Access tokens are short-lived PyJWT tokens; refresh tokens rotate and are revoked server-side through an httpOnly SameSite cookie. Uploads use random storage names, extension/size/signature validation, and authenticated case-scoped downloads; public static serving was removed. A role matrix/object checks, login lockout, production secret guard, security headers, environment-driven CORS, and hash-chain verification are implemented. Login throttling is in-process and not distributed, and exhaustive route-role coverage remains. |
 | Scalability | Missing | Some complaint listing is offset-paginated. Admin lists and several data paths are unbounded; correlation and SLA work run in-process, and there is no cache or load-test report. |
 | UI and accessibility | Partial | Role-specific pages, case details, charts, and notifications exist. The admin dashboard currently raises an error with the seeded SQLite data; loading/error states, responsive/accessibility coverage, and a consistent reusable design system need further verification. |
 | CI and end-to-end coverage | Missing | A small pytest suite exists and passes locally. No CI workflow, browser end-to-end suite, or coverage report is present. |
@@ -50,3 +50,19 @@ roadmap intent.
   startup backfill when the chain columns are first added; this startup schema
   adjustment is not a replacement for the pending Alembic migration work.
 - Login attempt and lockout state is currently process-local.
+
+## Phase B implementation notes
+
+- Complaint lifecycle transitions now pass through a service-level state
+  machine. Invalid moves return HTTP 409; accepted/rejected determinations are
+  required before closure, and closed cases cannot be reassigned or annotated.
+- Information requests, responses, determinations, reassignment, SLA overdue
+  escalation, and confirmed case-link decisions record timeline/audit data
+  through services. Confirmed link components are merged into case groups.
+- Complaint list/detail reads use repositories with eager loading for case
+  relationships; admin bureau workload counts use aggregate subqueries rather
+  than per-bureau count queries.
+- Docker and local startup instructions apply Alembic migrations before seeding.
+- Phase B does not include durable/distributed scheduling, a full repository
+  conversion for auth/analytics/notifications/reports, hybrid similarity, or
+  performance testing; those remain for later phases.

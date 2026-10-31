@@ -2,12 +2,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.models.complaint import Complaint, ComplaintStatus, Priority, ComplaintEvent
+from app.models.complaint import Complaint, ComplaintStatus, Priority
 from app.models.rules import SLAConfig
 from app.models.user import User, Role
 from app.models.bureau import Bureau
 from app.services.notification import create_notification, send_email
-from app.services.audit import log_audit
+from app.services.cases import transition_case
 from app.core.config import settings
 from app.core.logging import logger
 from app.core.database import SessionLocal
@@ -55,18 +55,22 @@ def run_sla_check_job():
         )
 
         for complaint in overdue_complaints:
-            complaint.is_overdue = True
-            complaint.status = ComplaintStatus.OVERDUE
-            
-            # Create Timeline Event
-            event = ComplaintEvent(
-                complaint_id=complaint.id,
+            transition_case(
+                db,
+                complaint.id,
+                ComplaintStatus.OVERDUE,
+                actor=None,
+                ip_address=None,
+                actor_email="system.sla@aicte.gov.in",
                 event_type="OVERDUE",
                 title="SLA Breached - Case Escalated",
-                description=f"Case exceeded deadline of {complaint.sla_due_at.strftime('%Y-%m-%d %H:%M UTC')}. Automatically escalated to Bureau Head and Admin.",
-                event_metadata={"sla_due_at": complaint.sla_due_at.isoformat()}
+                description=(
+                    f"Case exceeded deadline of {complaint.sla_due_at.strftime('%Y-%m-%d %H:%M UTC')}. "
+                    "Automatically escalated to Bureau Head and Admin."
+                ),
+                audit_action="SLA_BREACH_ESCALATED",
+                after_extra={"is_overdue": True},
             )
-            db.add(event)
 
             # Notify Admin users
             admins = db.query(User).filter(User.role == Role.ADMIN, User.is_active == True).all()
@@ -93,16 +97,6 @@ def run_sla_check_job():
                         <p>Please review immediately on the Drishti portal.</p>
                     """
                 )
-
-            # Audit Log
-            log_audit(
-                db=db,
-                action="SLA_BREACH_ESCALATED",
-                entity_type="Complaint",
-                entity_id=str(complaint.id),
-                actor_email="system.sla@aicte.gov.in",
-                after_state={"status": "Overdue", "is_overdue": True}
-            )
 
         db.commit()
         if overdue_complaints:

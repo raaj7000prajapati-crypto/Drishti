@@ -71,6 +71,12 @@ class Complaint(Base):
     
     source_links = relationship("CaseLink", foreign_keys="CaseLink.source_complaint_id", back_populates="source_complaint", cascade="all, delete-orphan")
     target_links = relationship("CaseLink", foreign_keys="CaseLink.target_complaint_id", back_populates="target_complaint", cascade="all, delete-orphan")
+    case_group_membership = relationship(
+        "CaseGroupMember",
+        back_populates="complaint",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 class ComplaintAttachment(Base):
     __tablename__ = "complaint_attachments"
