@@ -2,9 +2,9 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.core.permissions import require_all_complaint_access
+from app.core.permissions import ensure_complaint_access
 from app.models.complaint import CaseLink, ComplaintEvent
-from app.models.user import User
+from app.models.user import Role, User
 from app.repositories.cases import get_case_link_for_update
 from app.services.cases import CaseWorkflowConflict
 from app.services.correlation import decide_case_link
@@ -30,10 +30,12 @@ def decide_case_link_workflow(
         raise CaseLinkNotFound(f"Case link {link_id} not found.")
     if link.source_complaint is None or link.target_complaint is None:
         raise LinkedComplaintNotFound("A linked complaint record no longer exists.")
-    require_all_complaint_access(
-        actor,
-        [link.source_complaint, link.target_complaint],
-    )
+    if actor.role != Role.ADMIN and not (
+        actor.role == Role.OFFICIAL
+        and actor.bureau_id
+        in {link.source_complaint.bureau_id, link.target_complaint.bureau_id}
+    ):
+        ensure_complaint_access(actor, link.source_complaint)
     if link.status != "SUGGESTED":
         raise CaseWorkflowConflict("This case link has already been decided.")
 

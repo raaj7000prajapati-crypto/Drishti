@@ -23,6 +23,39 @@ from app.schemas.complaint import (
 )
 
 
+def complaint_response(complaint: Complaint) -> ComplaintResponse:
+    return ComplaintResponse(
+        id=complaint.id,
+        receipt_id=complaint.receipt_id,
+        institution_name=complaint.institution_name,
+        institution_state=complaint.institution_state,
+        institution_city=complaint.institution_city,
+        category=complaint.category,
+        priority=complaint.priority,
+        subject=complaint.subject,
+        description=complaint.description,
+        status=complaint.status,
+        determination=complaint.determination,
+        determination_reason=complaint.determination_reason,
+        bureau_id=complaint.bureau_id,
+        bureau_name=complaint.bureau.name if complaint.bureau else None,
+        assigned_official_id=complaint.assigned_official_id,
+        assigned_official_name=(
+            complaint.assigned_official.full_name
+            if complaint.assigned_official
+            else None
+        ),
+        complainant_name=(
+            complaint.complainant.full_name if complaint.complainant else None
+        ),
+        sla_due_at=complaint.sla_due_at,
+        is_overdue=complaint.is_overdue,
+        created_at=complaint.created_at,
+        updated_at=complaint.updated_at,
+        closed_at=complaint.closed_at,
+    )
+
+
 def list_complaint_responses(
     db: Session,
     actor: User,
@@ -44,39 +77,7 @@ def list_complaint_responses(
         skip=skip,
         limit=limit,
     )
-    return [
-        ComplaintResponse(
-            id=complaint.id,
-            receipt_id=complaint.receipt_id,
-            institution_name=complaint.institution_name,
-            institution_state=complaint.institution_state,
-            institution_city=complaint.institution_city,
-            category=complaint.category,
-            priority=complaint.priority,
-            subject=complaint.subject,
-            description=complaint.description,
-            status=complaint.status,
-            determination=complaint.determination,
-            determination_reason=complaint.determination_reason,
-            bureau_id=complaint.bureau_id,
-            bureau_name=complaint.bureau.name if complaint.bureau else None,
-            assigned_official_id=complaint.assigned_official_id,
-            assigned_official_name=(
-                complaint.assigned_official.full_name
-                if complaint.assigned_official
-                else None
-            ),
-            complainant_name=(
-                complaint.complainant.full_name if complaint.complainant else None
-            ),
-            sla_due_at=complaint.sla_due_at,
-            is_overdue=complaint.is_overdue,
-            created_at=complaint.created_at,
-            updated_at=complaint.updated_at,
-            closed_at=complaint.closed_at,
-        )
-        for complaint in complaints
-    ]
+    return [complaint_response(complaint) for complaint in complaints]
 
 
 def get_complaint_detail_response(
@@ -98,11 +99,7 @@ def get_complaint_detail_response(
         )
         if other_complaint is None or actor.role == Role.COMPLAINANT:
             continue
-        is_visible = actor.role == Role.ADMIN or (
-            actor.role == Role.OFFICIAL and other_complaint.bureau_id == actor.bureau_id
-        )
-        if actor.role == Role.OFFICIAL and not is_visible:
-            continue
+        is_visible = actor.role in {Role.ADMIN, Role.OFFICIAL}
         suggested_links.append(
             CaseLinkResponse(
                 id=link.id,

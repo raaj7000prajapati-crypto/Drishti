@@ -1,7 +1,9 @@
 import uuid
 
 from app.core.security import create_access_token
+from app.models.bureau import Bureau
 from app.models.complaint import CaseLink, Complaint, ComplaintEmbedding
+from app.models.notification import Notification
 from app.models.user import Role, User
 from app.services import correlation
 
@@ -167,6 +169,98 @@ def test_case_link_response_includes_shared_metadata_for_admin(client, db_sessio
     assert response.status_code == 200
     link = response.json()["suggested_links"][0]
     assert link["shared_metadata"] == {"category": "Fees", "state": "Delhi"}
+
+
+def test_official_can_confirm_cross_bureau_suggestion_and_notify_peer(
+    client, db_session
+):
+    suffix = uuid.uuid4().hex
+    source_bureau = Bureau(name=f"Source {suffix}", code=f"S-{suffix}")
+    target_bureau = Bureau(name=f"Target {suffix}", code=f"T-{suffix}")
+    db_session.add_all([source_bureau, target_bureau])
+    db_session.flush()
+    complainant = User(
+        email=f"phase-c-owner-{suffix}@example.test",
+        hashed_password="not-used",
+        full_name="Case Owner",
+        role=Role.COMPLAINANT,
+        is_active=True,
+    )
+    source_officer = User(
+        email=f"phase-c-source-{suffix}@example.test",
+        hashed_password="not-used",
+        full_name="Source Officer",
+        role=Role.OFFICIAL,
+        bureau_id=source_bureau.id,
+        is_active=True,
+    )
+    target_officer = User(
+        email=f"phase-c-target-{suffix}@example.test",
+        hashed_password="not-used",
+        full_name="Target Officer",
+        role=Role.OFFICIAL,
+        bureau_id=target_bureau.id,
+        is_active=True,
+    )
+    db_session.add_all([complainant, source_officer, target_officer])
+    db_session.flush()
+    cases = [
+        Complaint(
+            receipt_id=f"PHASE-C-CROSS-{suffix}-{index}",
+            complainant_id=complainant.id,
+            institution_name="Apex Institute",
+            institution_state="Delhi",
+            institution_city="New Delhi",
+            category="Fees",
+            subject=f"Cross-bureau fee case {index}",
+            description="Unpaid fee refund",
+            bureau_id=bureau.id,
+            assigned_official_id=official.id,
+        )
+        for index, (bureau, official) in enumerate(
+            (
+                (source_bureau, source_officer),
+                (target_bureau, target_officer),
+            )
+        )
+    ]
+    db_session.add_all(cases)
+    db_session.flush()
+    link = CaseLink(
+        source_complaint_id=cases[0].id,
+        target_complaint_id=cases[1].id,
+        similarity_score=0.7,
+        similarity_bucket="Medium",
+        shared_keywords="fee, refund",
+        shared_metadata={"institution": "Apex Institute"},
+    )
+    db_session.add(link)
+    db_session.commit()
+    headers = _admin_headers(source_officer)
+
+    details = client.get(
+        f"/api/v1/complaints/{cases[0].id}", headers=headers
+    )
+    assert details.status_code == 200
+    suggestion = details.json()["suggested_links"][0]
+    assert suggestion["target_receipt_id"] == cases[1].receipt_id
+    assert suggestion["shared_keywords"] == "fee, refund"
+    assert suggestion["shared_metadata"] == {"institution": "Apex Institute"}
+
+    confirmed = client.post(
+        f"/api/v1/officials/links/{link.id}/decide?decision=CONFIRMED",
+        headers=headers,
+    )
+    assert confirmed.status_code == 200
+    notification = (
+        db_session.query(Notification)
+        .filter_by(
+            user_id=target_officer.id,
+            title="Cross-Bureau Case Link Confirmed",
+        )
+        .one()
+    )
+    assert cases[0].receipt_id in notification.message
 
 
 def test_evaluator_skips_unavailable_model_and_writes_real_tfidf_metrics(

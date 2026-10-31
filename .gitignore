@@ -30,6 +30,8 @@ dist/
 frontend/dist/
 dist-ssr/
 *.local
+frontend/test-results/
+frontend/playwright-report/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*

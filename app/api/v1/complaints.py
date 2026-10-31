@@ -33,6 +33,7 @@ from app.services.cases import (
 )
 from app.services.intake import file_complaint as create_case_intake
 from app.services.complaints import (
+    complaint_response,
     get_complaint_detail_response,
     list_complaint_responses,
 )
@@ -80,7 +81,7 @@ async def file_complaint(
     current_user: User = Depends(require_permission("complaint.create"))
 ):
     """Create, route, notify, and audit a newly filed complaint."""
-    return await create_case_intake(
+    complaint = await create_case_intake(
         db,
         current_user,
         institution_name=institution_name,
@@ -93,6 +94,7 @@ async def file_complaint(
         ip_address=get_client_ip(request),
         files=files,
     )
+    return complaint_response(complaint)
 
 @router.get("/", response_model=List[ComplaintResponse])
 def list_complaints(
