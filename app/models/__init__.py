@@ -1,5 +1,5 @@
 from app.core.database import Base
-from app.models.user import User, Role
+from app.models.user import User, Role, RefreshToken
 from app.models.bureau import Bureau
 from app.models.complaint import (
     Complaint, ComplaintStatus, Priority, Determination,
@@ -14,6 +14,7 @@ __all__ = [
     "Base",
     "User",
     "Role",
+    "RefreshToken",
     "Bureau",
     "Complaint",
     "ComplaintStatus",

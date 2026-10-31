@@ -20,7 +20,7 @@ flowchart LR
     Services --> Scheduler[In-process APScheduler]
     Services --> SMTP[SMTP / MailHog]
     API --> Storage[Local upload storage]
-    Storage --> PublicFiles[Static /uploads mount]
+    Browser -->|Authenticated download| API
 ```
 
 The routers currently contain some workflow and database logic; the diagram
@@ -53,7 +53,8 @@ implementation has no explicit case-group entity.
 
 - Frontend: React 19, Vite, Tailwind CSS 4, React Router, Recharts, Axios
 - Backend: Python 3.11 in Docker, FastAPI, SQLAlchemy 2, Pydantic 2, Alembic
-- Authentication: JWT via `python-jose`; passwords are hashed with bcrypt
+- Authentication: short-lived JWT access tokens via PyJWT, rotated server-tracked
+  refresh tokens in an httpOnly cookie; passwords are hashed with bcrypt
 - Data: SQLite for local development; PostgreSQL 16 in Docker Compose
 - Background work: in-process APScheduler for SLA checks
 - Similarity: scikit-learn TF-IDF fallback and optional sentence-transformers
@@ -69,9 +70,8 @@ Docker Compose starts PostgreSQL, MailHog, the backend, and the frontend:
 docker compose up --build
 ```
 
-The backend seeds prototype data when it starts. This currently uses
-`Base.metadata.create_all`; the checked-in Alembic migration is empty, so this
-setup is not a production migration workflow.
+The backend seeds prototype data when it starts. Database schema creation and
+migrations are still being improved; use only disposable data for development.
 
 | Service | URL |
 |---|---|
@@ -123,7 +123,8 @@ local demonstrations only:
 - Complaint submission with a generated receipt ID, bureau routing rules, and
   least-loaded-official assignment when an eligible official exists
 - Complaint list filtering and offset pagination
-- File uploads with extension and size checks
+- File uploads with random server-side names, size/signature/extension checks,
+  and authenticated complaint-scoped downloads
 - In-app notifications and SMTP email attempts
 - Complaint timelines, information requests and responses, annotations,
   determinations, closure, and post-closure feedback
@@ -131,14 +132,15 @@ local demonstrations only:
   confirm/reject decisions
 - SLA deadline calculation and an in-process overdue-case scheduler
 - Database triggers that block updates and deletes to audit-log rows on
-  supported SQLite and PostgreSQL deployments
+  supported SQLite and PostgreSQL deployments, with a SHA-256 hash chain and
+  admin verification endpoint
 - Admin user, bureau, routing-rule, and SLA configuration operations
 - Analytics, CSV/PDF report routes, and JSON health/metrics endpoints
 
-These features have important limitations: workflow transitions are not
-validated by a state machine; audit records are not hash-chained; similarity
-does not use a hybrid score; and some ownership, storage, and production
-hardening requirements remain incomplete. See [docs/AUDIT.md](./docs/AUDIT.md).
+These features have important limitations: workflow transitions are not yet
+validated by a state machine; similarity does not use a hybrid score; login
+lockout state is in-process; and production deployment, migrations, and
+performance still need further hardening. See [docs/AUDIT.md](./docs/AUDIT.md).
 
 ## API overview
 
@@ -175,24 +177,23 @@ npm run lint
 npm run build
 ```
 
-The current pytest suite is small and does not provide complete workflow,
-authorization, browser, or performance coverage. The ML evaluation report
-currently contains simulated SBERT fallback results when the model is
-unavailable; those results must not be presented as measured model performance.
+The pytest suite includes role-denial, object-authorization, refresh-token,
+upload-validation, security-header, and audit-integrity tests, but does not yet
+provide complete workflow, browser, or performance coverage. ML evaluation
+still requires the Phase C correction before any reported model metrics should
+be treated as measured performance.
 
 ## Security notes
 
-This repository is a prototype. Do not expose it to untrusted users or use its
-demo credentials or checked-in Compose database credentials in a deployed
-environment. Supply a strong unique `SECRET_KEY` and database credentials
-through protected environment configuration.
-
-The current implementation returns refresh tokens in the login response,
-serves uploaded files through a static `/uploads` mount, and checks upload
-extensions and size but not file signatures. CORS is configured for local
-origins. Audit-log triggers prevent row updates and deletes, but there is no
-hash-chain verification endpoint. See the audit table for the outstanding
-security work.
+This repository remains a prototype and is not ready for production deployment.
+Do not use demo accounts or checked-in Compose database credentials in a
+deployed environment. Production startup rejects the prototype signing key;
+supply a unique `SECRET_KEY`, `APP_ENV=production`, database credentials, and
+an explicit `BACKEND_CORS_ORIGINS` value through protected environment
+configuration. Refresh tokens are stored in an httpOnly cookie and rotated
+server-side; uploaded files are served only through authenticated,
+complaint-authorized endpoints. Login lockout currently uses process memory
+and is not shared across multiple workers or restarts.
 
 ## Screenshots
 

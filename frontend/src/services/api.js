@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: '/api/v1',
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -19,17 +20,28 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Intercept 401 responses to auto-logout or refresh
+// Refresh once using the httpOnly cookie, then retry the original request.
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response && error.response.status === 401) {
-      // If unauthorized on a protected route, clear credentials
       const originalRequest = error.config;
-      if (!originalRequest.url.includes('/auth/login') && !originalRequest.url.includes('/auth/register')) {
-        localStorage.removeItem('drishti_token');
-        localStorage.removeItem('drishti_refresh');
-        localStorage.removeItem('drishti_user');
+      const isAuthRequest = /\/auth\/(login|register|refresh|logout)/.test(originalRequest.url || '');
+      if (!isAuthRequest && !originalRequest._retry) {
+        originalRequest._retry = true;
+        try {
+          const refreshResponse = await api.post('/auth/refresh');
+          const nextToken = refreshResponse.data.access_token;
+          localStorage.setItem('drishti_token', nextToken);
+          window.dispatchEvent(new Event('drishti:token-refreshed'));
+          originalRequest.headers.Authorization = `Bearer ${nextToken}`;
+          return api(originalRequest);
+        } catch (refreshError) {
+          localStorage.removeItem('drishti_token');
+          localStorage.removeItem('drishti_user');
+          window.dispatchEvent(new Event('drishti:session-expired'));
+          return Promise.reject(refreshError);
+        }
       }
     }
     return Promise.reject(error);
@@ -39,6 +51,7 @@ api.interceptors.response.use(
 // --- Auth APIs ---
 export const authAPI = {
   login: (data) => api.post('/auth/login', data),
+  logout: () => api.post('/auth/logout'),
   register: (data) => api.post('/auth/register', data),
   getMe: () => api.get('/auth/me'),
 };
@@ -47,6 +60,10 @@ export const authAPI = {
 export const complaintsAPI = {
   list: (params) => api.get('/complaints/', { params }),
   get: (id) => api.get(`/complaints/${id}`),
+  downloadAttachment: (complaintId, attachmentId) =>
+    api.get(`/complaints/${complaintId}/attachments/${attachmentId}`, { responseType: 'blob' }),
+  downloadAnnotationAttachment: (complaintId, annotationId) =>
+    api.get(`/complaints/${complaintId}/annotations/${annotationId}/attachment`, { responseType: 'blob' }),
   checkDuplicates: (subject, description) =>
     api.post('/complaints/check-duplicates', null, { params: { subject, description } }),
   fileComplaint: (formData) =>
@@ -85,6 +102,7 @@ export const adminAPI = {
   updateSLA: (priority, data) => api.put(`/admin/sla/${priority}`, data),
   reassignComplaint: (id, data) => api.post(`/admin/complaints/${id}/reassign`, data),
   getAuditLogs: (params) => api.get('/admin/audit-logs', { params }),
+  verifyAuditLogChain: () => api.get('/admin/audit-logs/verify'),
 };
 
 // --- Analytics & Reports APIs ---

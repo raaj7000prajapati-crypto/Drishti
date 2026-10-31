@@ -28,3 +28,17 @@ class User(Base):
     complaints = relationship("Complaint", back_populates="complainant", foreign_keys="Complaint.complainant_id")
     assigned_complaints = relationship("Complaint", back_populates="assigned_official", foreign_keys="Complaint.assigned_official_id")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String(36), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    user = relationship("User", back_populates="refresh_tokens")

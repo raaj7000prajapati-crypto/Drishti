@@ -2,11 +2,11 @@ import io
 import csv
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.api.deps import require_roles
+from app.core.permissions import require_permission
 from app.models.user import User, Role
 from app.models.complaint import Complaint, ComplaintStatus
 from app.models.bureau import Bureau
@@ -17,7 +17,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 router = APIRouter(prefix="/reports", tags=["Reports & Export"])
 
-admin_or_official = require_roles([Role.ADMIN, Role.OFFICIAL])
+admin_or_official = require_permission("report.export")
 
 @router.get("/export/csv")
 def export_csv(
@@ -29,7 +29,9 @@ def export_csv(
 ):
     """Export grievance records to CSV."""
     query = db.query(Complaint)
-    if current_user.role == Role.OFFICIAL and current_user.bureau_id:
+    if current_user.role == Role.OFFICIAL:
+        if current_user.bureau_id is None:
+            raise HTTPException(status_code=403, detail="Official account is not assigned to a bureau")
         query = query.filter(Complaint.bureau_id == current_user.bureau_id)
     elif bureau_id:
         query = query.filter(Complaint.bureau_id == bureau_id)
@@ -86,7 +88,9 @@ def export_pdf(
 ):
     """Generate executive AICTE grievance audit summary in PDF format."""
     query = db.query(Complaint)
-    if current_user.role == Role.OFFICIAL and current_user.bureau_id:
+    if current_user.role == Role.OFFICIAL:
+        if current_user.bureau_id is None:
+            raise HTTPException(status_code=403, detail="Official account is not assigned to a bureau")
         query = query.filter(Complaint.bureau_id == current_user.bureau_id)
     elif bureau_id:
         query = query.filter(Complaint.bureau_id == bureau_id)

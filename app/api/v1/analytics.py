@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, or_
 from app.core.database import get_db
-from app.api.deps import get_current_user, require_roles
+from app.core.permissions import require_permission
 from app.models.user import User, Role
 from app.models.bureau import Bureau
 from app.models.complaint import Complaint, ComplaintStatus, CaseLink, Priority
@@ -25,6 +25,13 @@ STATUS_COLORS = {
     "Closed": "#10B981"       # Emerald
 }
 
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @router.get("/dashboard", response_model=DashboardStatsResponse)
 def get_dashboard_analytics(
     bureau_id: Optional[int] = None,
@@ -32,7 +39,7 @@ def get_dashboard_analytics(
     status: Optional[str] = None,
     date_range_days: int = Query(180, ge=7, le=365),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("analytics.read"))
 ):
     """
     Returns live aggregated metrics and KPI statistics computed from the database.
@@ -45,8 +52,13 @@ def get_dashboard_analytics(
     query = db.query(Complaint).filter(Complaint.created_at >= start_date)
 
     # Role restriction: if Official, restrict to their bureau unless Admin
-    if current_user.role == Role.OFFICIAL and current_user.bureau_id:
-        query = query.filter(Complaint.bureau_id == current_user.bureau_id)
+    if current_user.role == Role.COMPLAINANT:
+        query = query.filter(Complaint.complainant_id == current_user.id)
+    elif current_user.role == Role.OFFICIAL:
+        if current_user.bureau_id is None:
+            query = query.filter(False)
+        else:
+            query = query.filter(Complaint.bureau_id == current_user.bureau_id)
     elif bureau_id:
         query = query.filter(Complaint.bureau_id == bureau_id)
 
@@ -120,7 +132,18 @@ def get_dashboard_analytics(
 
     # 5. AI Match Quality (Similarity Buckets)
     bucket_counts = {"High": 0, "Medium": 0, "Low": 0, "Minimal": 0}
-    links = db.query(CaseLink).all()
+    links_query = db.query(CaseLink)
+    if current_user.role == Role.OFFICIAL and current_user.bureau_id is not None:
+        accessible_complaint_ids = db.query(Complaint.id).filter(
+            Complaint.bureau_id == current_user.bureau_id
+        )
+        links_query = links_query.filter(
+            or_(
+                CaseLink.source_complaint_id.in_(accessible_complaint_ids),
+                CaseLink.target_complaint_id.in_(accessible_complaint_ids),
+            )
+        )
+    links = links_query.all()
     for l in links:
         b_name = l.similarity_bucket or "Minimal"
         bucket_counts[b_name] = bucket_counts.get(b_name, 0) + 1
@@ -144,14 +167,14 @@ def get_dashboard_analytics(
     resolution_durations = []
     for c in all_filtered_complaints:
         if c.status == ComplaintStatus.CLOSED and c.closed_at and c.created_at:
-            diff = (c.closed_at - c.created_at).total_seconds() / 86400.0
+            diff = (_as_utc(c.closed_at) - _as_utc(c.created_at)).total_seconds() / 86400.0
             resolution_durations.append(max(0.1, diff))
 
     avg_resolution_days = round(sum(resolution_durations) / len(resolution_durations), 1) if resolution_durations else 4.2
     overdue_pct = round((total_overdue / total_count * 100), 1) if total_count > 0 else 0.0
     sla_compliance = round(max(0.0, 100.0 - overdue_pct), 1)
     
-    confirmed_links_count = db.query(func.count(CaseLink.id)).filter(CaseLink.status == "CONFIRMED").scalar() or 0
+    confirmed_links_count = sum(1 for link in links if link.status == "CONFIRMED")
 
     impact_metrics = SystemImpactMetrics(
         avg_resolution_days=avg_resolution_days,
@@ -168,13 +191,22 @@ def get_dashboard_analytics(
     pending_flags: List[PendingDelayedComplaint] = []
     delayed_complaints = [
         c for c in all_filtered_complaints 
-        if c.status != ComplaintStatus.CLOSED and (c.is_overdue or (c.sla_due_at and c.sla_due_at < now + timedelta(days=2)))
+        if c.status != ComplaintStatus.CLOSED and (
+            c.is_overdue
+            or (c.sla_due_at and _as_utc(c.sla_due_at) < now + timedelta(days=2))
+        )
     ]
     # Sort with overdue first
-    delayed_complaints.sort(key=lambda c: (not c.is_overdue, c.sla_due_at or now))
+    delayed_complaints.sort(
+        key=lambda c: (not c.is_overdue, _as_utc(c.sla_due_at) if c.sla_due_at else now)
+    )
 
     for c in delayed_complaints[:15]:
-        days_open = int((now - c.created_at).total_seconds() / 86400.0) if c.created_at else 0
+        days_open = (
+            int((now - _as_utc(c.created_at)).total_seconds() / 86400.0)
+            if c.created_at
+            else 0
+        )
         pending_flags.append(PendingDelayedComplaint(
             id=c.id,
             receipt_id=c.receipt_id,

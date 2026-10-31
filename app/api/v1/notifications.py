@@ -2,7 +2,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.api.deps import get_current_user
+from app.core.permissions import require_permission
 from app.models.user import User
 from app.models.notification import Notification
 from pydantic import BaseModel
@@ -24,7 +24,7 @@ class NotificationResponse(BaseModel):
 @router.get("/", response_model=List[NotificationResponse])
 def get_user_notifications(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("notification.read"))
 ):
     """Retrieve in-app notifications for authenticated user."""
     notifications = (
@@ -40,7 +40,7 @@ def get_user_notifications(
 def mark_notification_read(
     id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("notification.read"))
 ):
     """Mark a notification as read."""
     n = db.query(Notification).filter(Notification.id == id, Notification.user_id == current_user.id).first()
@@ -53,7 +53,7 @@ def mark_notification_read(
 @router.put("/read-all")
 def mark_all_read(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("notification.read"))
 ):
     """Mark all notifications for authenticated user as read."""
     db.query(Notification).filter(Notification.user_id == current_user.id, Notification.is_read == False).update({"is_read": True})

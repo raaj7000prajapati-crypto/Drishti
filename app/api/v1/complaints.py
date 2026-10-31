@@ -1,13 +1,16 @@
 import json
+import os
 import random
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 from app.core.database import get_db
 from app.core.storage import storage
-from app.api.deps import get_current_user, require_roles, get_client_ip
+from app.api.deps import get_client_ip
+from app.core.permissions import ensure_complaint_access, require_permission
 from app.models.user import User, Role
 from app.models.bureau import Bureau
 from app.models.complaint import (
@@ -32,6 +35,14 @@ from app.core.logging import logger
 
 router = APIRouter(prefix="/complaints", tags=["Complaints"])
 
+
+def _authorized_complaint(db: Session, complaint_id: int, current_user: User) -> Complaint:
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    ensure_complaint_access(current_user, complaint)
+    return complaint
+
 def generate_receipt_id(db: Session) -> str:
     """Generates unique receipt ID in format DRI-YYYY-XXXXXX."""
     current_year = datetime.now(timezone.utc).year
@@ -49,7 +60,7 @@ def check_duplicates(
     subject: str = Query(...),
     description: str = Query(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("complaint.duplicate_check"))
 ):
     """
     Intake duplicate detection: tests subject and description against active complaints.
@@ -74,7 +85,7 @@ async def file_complaint(
     description: str = Form(...),
     files: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("complaint.create"))
 ):
     """
     Stage 1 & 2: Complaint Intake & Smart Routing.
@@ -230,7 +241,7 @@ def list_complaints(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("complaint.read"))
 ):
     """
     List complaints with filtering, search, and role-based access control:
@@ -244,7 +255,9 @@ def list_complaints(
     if current_user.role == Role.COMPLAINANT:
         query = query.filter(Complaint.complainant_id == current_user.id)
     elif current_user.role == Role.OFFICIAL:
-        if current_user.bureau_id:
+        if current_user.bureau_id is None:
+            query = query.filter(False)
+        else:
             query = query.filter(Complaint.bureau_id == current_user.bureau_id)
     # ADMIN sees all
 
@@ -301,19 +314,10 @@ def list_complaints(
 def get_complaint_detail(
     id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("complaint.read"))
 ):
     """Retrieve full complaint details with timeline, evidence attachments, and AI suggestions."""
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint:
-        raise HTTPException(status_code=404, detail="Complaint not found")
-
-    # Enforce RBAC
-    if current_user.role == Role.COMPLAINANT and complaint.complainant_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied to this grievance record")
-    if current_user.role == Role.OFFICIAL and complaint.bureau_id != current_user.bureau_id:
-        # Officials can view linked cross-bureau cases but check permission
-        pass
+    complaint = _authorized_complaint(db, id, current_user)
 
     # Gather related case links
     links_query = (
@@ -332,17 +336,28 @@ def get_complaint_detail(
         # Target is the other complaint
         other_complaint = link.target_complaint if link.source_complaint_id == complaint.id else link.source_complaint
         if other_complaint:
+            is_visible = (
+                current_user.role == Role.ADMIN
+                or (
+                    current_user.role == Role.OFFICIAL
+                    and other_complaint.bureau_id == current_user.bureau_id
+                )
+            )
+            if current_user.role == Role.COMPLAINANT:
+                continue
+            if current_user.role == Role.OFFICIAL and not is_visible:
+                continue
             suggested_links.append(CaseLinkResponse(
                 id=link.id,
-                source_complaint_id=link.source_complaint_id,
-                target_complaint_id=other_complaint.id,
-                target_receipt_id=other_complaint.receipt_id,
-                target_subject=other_complaint.subject,
-                target_bureau_name=other_complaint.bureau.name if other_complaint.bureau else "AICTE Cell",
-                target_status=other_complaint.status.value,
+                source_complaint_id=complaint.id if is_visible else None,
+                target_complaint_id=other_complaint.id if is_visible else None,
+                target_receipt_id=other_complaint.receipt_id if is_visible else None,
+                target_subject=other_complaint.subject if is_visible else None,
+                target_bureau_name=other_complaint.bureau.name if other_complaint.bureau and is_visible else None,
+                target_status=other_complaint.status.value if is_visible else None,
                 similarity_score=link.similarity_score,
                 similarity_bucket=link.similarity_bucket,
-                shared_keywords=link.shared_keywords,
+                shared_keywords=link.shared_keywords if is_visible else None,
                 status=link.status,
                 decided_at=link.decided_at,
                 decided_by_name=link.decided_by.full_name if link.decided_by else None
@@ -353,7 +368,6 @@ def get_complaint_detail(
         AttachmentResponse(
             id=a.id,
             file_name=a.file_name,
-            stored_name=a.stored_name,
             file_size=a.file_size,
             content_type=a.content_type,
             uploaded_at=a.uploaded_at
@@ -390,7 +404,7 @@ def get_complaint_detail(
             id=an.id,
             note=an.note,
             attachment_name=an.attachment_name,
-            attachment_stored_name=an.attachment_stored_name,
+            has_attachment=bool(an.attachment_stored_name),
             is_internal=an.is_internal,
             created_at=an.created_at,
             author_name=an.author.full_name if an.author else "Official"
@@ -438,6 +452,69 @@ def get_complaint_detail(
         feedback=feedback_resp
     )
 
+
+@router.get("/{id}/attachments/{attachment_id}")
+def download_complaint_attachment(
+    id: int,
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("complaint.read")),
+):
+    complaint = _authorized_complaint(db, id, current_user)
+    attachment = (
+        db.query(ComplaintAttachment)
+        .filter(
+            ComplaintAttachment.id == attachment_id,
+            ComplaintAttachment.complaint_id == complaint.id,
+        )
+        .first()
+    )
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        path = storage.get_path(attachment.stored_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    return FileResponse(
+        path,
+        media_type=attachment.content_type,
+        filename=attachment.file_name,
+        content_disposition_type="attachment",
+    )
+
+
+@router.get("/{id}/annotations/{annotation_id}/attachment")
+def download_annotation_attachment(
+    id: int,
+    annotation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("complaint.read")),
+):
+    complaint = _authorized_complaint(db, id, current_user)
+    annotation = (
+        db.query(Annotation)
+        .filter(Annotation.id == annotation_id, Annotation.complaint_id == complaint.id)
+        .first()
+    )
+    if not annotation or not annotation.attachment_stored_name:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    if current_user.role == Role.COMPLAINANT and annotation.is_internal:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        path = storage.get_path(annotation.attachment_stored_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=annotation.attachment_name or "attachment",
+        content_disposition_type="attachment",
+    )
+
 @router.post("/{id}/info-respond", response_model=InfoRequestResponse)
 def respond_to_info_request(
     id: int,
@@ -445,12 +522,10 @@ def respond_to_info_request(
     request: Request,
     request_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("complaint.respond_info"))
 ):
     """Complainant responds to an official's information clarification request."""
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint or complaint.complainant_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to respond to this case")
+    complaint = _authorized_complaint(db, id, current_user)
 
     # Find pending request
     query = db.query(InformationRequest).filter(
@@ -513,12 +588,10 @@ def submit_feedback(
     feedback_in: FeedbackCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_permission("complaint.feedback"))
 ):
     """Complainant submits post-closure satisfaction feedback."""
-    complaint = db.query(Complaint).filter(Complaint.id == id).first()
-    if not complaint or complaint.complainant_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to submit feedback for this case")
+    complaint = _authorized_complaint(db, id, current_user)
 
     if complaint.status != ComplaintStatus.CLOSED:
         raise HTTPException(status_code=400, detail="Feedback can only be provided after case closure")

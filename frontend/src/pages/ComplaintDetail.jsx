@@ -193,6 +193,22 @@ export default function ComplaintDetail() {
     }
   };
 
+  const downloadFile = async (request, filename) => {
+    try {
+      const response = await request();
+      const objectUrl = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Could not download the attachment.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="max-w-5xl mx-auto py-16 px-4 text-center text-xs text-slate-500">
@@ -344,17 +360,19 @@ export default function ComplaintDetail() {
             </p>
             <div className="flex flex-wrap gap-2">
               {complaint.attachments.map((att) => (
-                <a
+                <button
                   key={att.id}
-                  href={`/uploads/${att.stored_name}`}
-                  target="_blank"
-                  rel="noreferrer"
+                  type="button"
+                  onClick={() => downloadFile(
+                    () => complaintsAPI.downloadAttachment(complaint.id, att.id),
+                    att.file_name
+                  )}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-amber-500 rounded-lg text-xs font-medium text-slate-700 hover:text-amber-700 transition shadow-sm"
                 >
                   <FileText className="w-3.5 h-3.5 text-slate-400" />
                   <span className="truncate max-w-xs">{att.file_name}</span>
                   <Download className="w-3 h-3 text-slate-400 ml-1" />
-                </a>
+                </button>
               ))}
             </div>
           </div>
@@ -708,15 +726,17 @@ export default function ComplaintDetail() {
                       <span>{new Date(an.created_at).toLocaleDateString()}</span>
                     </div>
                     <p className="text-slate-800 mt-1">{an.note}</p>
-                    {an.attachment_stored_name && (
-                      <a
-                        href={`/uploads/${an.attachment_stored_name}`}
-                        target="_blank"
-                        rel="noreferrer"
+                    {an.has_attachment && (
+                      <button
+                        type="button"
+                        onClick={() => downloadFile(
+                          () => complaintsAPI.downloadAnnotationAttachment(complaint.id, an.id),
+                          an.attachment_name || 'attachment'
+                        )}
                         className="text-amber-600 underline text-[10px] block mt-1"
                       >
                         Download: {an.attachment_name}
-                      </a>
+                      </button>
                     )}
                   </div>
                 ))}

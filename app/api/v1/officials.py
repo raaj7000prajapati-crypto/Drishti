@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.storage import storage
-from app.api.deps import get_current_user, require_roles, get_client_ip
+from app.api.deps import get_client_ip
+from app.core.permissions import ensure_complaint_access, require_permission, require_all_complaint_access
 from app.models.user import User, Role
 from app.models.complaint import (
     Complaint, ComplaintStatus, Determination, ComplaintEvent,
@@ -22,7 +23,7 @@ from app.core.logging import logger
 router = APIRouter(prefix="/officials", tags=["Official Operations"])
 
 # Guard all routes in this router to Officials and Admins
-official_or_admin = require_roles([Role.OFFICIAL, Role.ADMIN])
+official_or_admin = require_permission("complaint.manage")
 
 @router.post("/cases/{id}/status")
 def update_case_status(
@@ -37,8 +38,7 @@ def update_case_status(
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    if current_user.role == Role.OFFICIAL and complaint.bureau_id != current_user.bureau_id:
-        raise HTTPException(status_code=403, detail="Cannot modify complaint belonging to another bureau")
+    ensure_complaint_access(current_user, complaint)
 
     old_status = complaint.status.value
     complaint.status = status_update.status
@@ -85,8 +85,7 @@ def request_information(
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    if current_user.role == Role.OFFICIAL and complaint.bureau_id != current_user.bureau_id:
-        raise HTTPException(status_code=403, detail="Cannot modify complaint belonging to another bureau")
+    ensure_complaint_access(current_user, complaint)
 
     # Set status to Awaiting Info
     old_status = complaint.status.value
@@ -165,6 +164,7 @@ async def add_annotation(
     complaint = db.query(Complaint).filter(Complaint.id == id).first()
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
+    ensure_complaint_access(current_user, complaint)
 
     attachment_stored_name = None
     attachment_name = None
@@ -213,7 +213,7 @@ async def add_annotation(
         id=annotation.id,
         note=annotation.note,
         attachment_name=annotation.attachment_name,
-        attachment_stored_name=annotation.attachment_stored_name,
+        has_attachment=bool(annotation.attachment_stored_name),
         is_internal=annotation.is_internal,
         created_at=annotation.created_at,
         author_name=current_user.full_name
@@ -235,6 +235,7 @@ def propose_determination(
     complaint = db.query(Complaint).filter(Complaint.id == id).first()
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
+    ensure_complaint_access(current_user, complaint)
 
     if complaint.status == ComplaintStatus.CLOSED:
         raise HTTPException(status_code=400, detail="Case is already closed and archived")
@@ -316,6 +317,15 @@ def decide_suggested_link(
     and alert officials across bureaus to eliminate duplicate work.
     """
     client_ip = get_client_ip(request) if request else "127.0.0.1"
+    link_candidate = db.query(CaseLink).filter(CaseLink.id == link_id).first()
+    if not link_candidate:
+        raise HTTPException(status_code=404, detail="Case link not found")
+    if not link_candidate.source_complaint or not link_candidate.target_complaint:
+        raise HTTPException(status_code=404, detail="Linked grievance record not found")
+    require_all_complaint_access(
+        current_user,
+        [link_candidate.source_complaint, link_candidate.target_complaint],
+    )
     link = decide_case_link(
         db=db,
         link_id=link_id,
@@ -323,14 +333,15 @@ def decide_suggested_link(
         deciding_user=current_user,
         ip_address=client_ip
     )
-
+    source_case = link.source_complaint
+    target_case = link.target_complaint
     # Create timeline event on both cases
     ev_source = ComplaintEvent(
         complaint_id=link.source_complaint_id,
         actor_id=current_user.id,
         event_type=f"LINK_{decision}",
         title=f"AI Case Correlation {decision.capitalize()}",
-        description=f"Official {current_user.full_name} {decision.lower()} related case link with {link.target_complaint.receipt_id} (Match score: {int(link.similarity_score * 100)}%)."
+        description=f"Official {current_user.full_name} {decision.lower()} a related case link (Match score: {int(link.similarity_score * 100)}%)."
     )
     db.add(ev_source)
     
@@ -339,21 +350,34 @@ def decide_suggested_link(
         actor_id=current_user.id,
         event_type=f"LINK_{decision}",
         title=f"Cross-Bureau Link {decision.capitalize()}",
-        description=f"Cross-bureau link with {link.source_complaint.receipt_id} was {decision.lower()} by {current_user.full_name}."
+        description=f"A related case link was {decision.lower()} by {current_user.full_name}."
     )
     db.add(ev_target)
     db.commit()
 
+    other_case = target_case if ensure_visible_case(current_user, target_case) else source_case
+    can_view_both = current_user.role == Role.ADMIN or (
+        ensure_visible_case(current_user, source_case)
+        and ensure_visible_case(current_user, target_case)
+    )
     return CaseLinkResponse(
         id=link.id,
-        source_complaint_id=link.source_complaint_id,
-        target_complaint_id=link.target_complaint_id,
-        target_receipt_id=link.target_complaint.receipt_id if link.target_complaint else None,
-        target_subject=link.target_complaint.subject if link.target_complaint else None,
+        source_complaint_id=link.source_complaint_id if can_view_both else None,
+        target_complaint_id=link.target_complaint_id if can_view_both else None,
+        target_receipt_id=other_case.receipt_id if can_view_both else None,
+        target_subject=other_case.subject if can_view_both else None,
         similarity_score=link.similarity_score,
         similarity_bucket=link.similarity_bucket,
-        shared_keywords=link.shared_keywords,
+        shared_keywords=link.shared_keywords if can_view_both else None,
         status=link.status,
         decided_at=link.decided_at,
         decided_by_name=current_user.full_name
     )
+
+
+def ensure_visible_case(user: User, complaint: Complaint) -> bool:
+    if user.role == Role.ADMIN:
+        return True
+    if user.role == Role.COMPLAINANT:
+        return complaint.complainant_id == user.id
+    return user.bureau_id is not None and complaint.bureau_id == user.bureau_id

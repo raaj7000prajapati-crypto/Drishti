@@ -42,7 +42,9 @@ services:
         condition: service_started
     environment:
       - DATABASE_URL=postgresql+psycopg2://drishti:drishti123@db:5432/drishtidb
-      - SECRET_KEY=drishti-super-secret-key-sih-2026-prod
+      - SECRET_KEY=${SECRET_KEY:-drishti-aicte-super-secure-secret-key-sih-2026}
+      - APP_ENV=${APP_ENV:-development}
+      - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS:-http://localhost:80}
       - SMTP_HOST=mailhog
       - SMTP_PORT=1025
       - STORAGE_DIR=/app/uploads

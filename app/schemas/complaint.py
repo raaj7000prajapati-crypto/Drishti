@@ -6,7 +6,6 @@ from app.models.complaint import ComplaintStatus, Priority, Determination
 class AttachmentResponse(BaseModel):
     id: int
     file_name: str
-    stored_name: str
     file_size: int
     content_type: str
     uploaded_at: datetime
@@ -42,7 +41,7 @@ class AnnotationResponse(BaseModel):
     id: int
     note: str
     attachment_name: Optional[str] = None
-    attachment_stored_name: Optional[str] = None
+    has_attachment: bool = False
     is_internal: bool
     created_at: datetime
     author_name: Optional[str] = None
@@ -52,8 +51,8 @@ class AnnotationResponse(BaseModel):
 
 class CaseLinkResponse(BaseModel):
     id: int
-    source_complaint_id: int
-    target_complaint_id: int
+    source_complaint_id: Optional[int] = None
+    target_complaint_id: Optional[int] = None
     target_receipt_id: Optional[str] = None
     target_subject: Optional[str] = None
     target_bureau_name: Optional[str] = None

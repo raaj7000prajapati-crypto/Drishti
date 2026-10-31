@@ -1,25 +1,36 @@
-import os
-from typing import List, Union
-from pydantic_settings import BaseSettings
-from pydantic import AnyHttpUrl, field_validator
+import json
+from typing import Annotated, List
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+INSECURE_SECRET_KEY = "drishti-aicte-super-secure-secret-key-sih-2026"
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV.strip().lower() in {"prod", "production"}
+
     PROJECT_NAME: str = "Drishti AICTE"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
     
     # Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "drishti-aicte-super-secure-secret-key-sih-2026")
+    SECRET_KEY: str = INSECURE_SECRET_KEY
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day for demo convenience
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=15, ge=1, le=60)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    APP_ENV: str = "development"
+    LOGIN_FAILURE_LIMIT: int = 5
+    LOGIN_LOCKOUT_MINUTES: int = 15
     
     # Database
     # If DATABASE_URL is not set, default to SQLite for quick local standalone run, or Postgres in Docker
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./drishti.db")
+    DATABASE_URL: str = "sqlite:///./drishti.db"
     
     # CORS
-    BACKEND_CORS_ORIGINS: List[str] = [
+    BACKEND_CORS_ORIGINS: Annotated[List[str], NoDecode] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
@@ -27,16 +38,16 @@ class Settings(BaseSettings):
     ]
     
     # Storage
-    STORAGE_DIR: str = os.getenv("STORAGE_DIR", "./uploads")
+    STORAGE_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 10
     ALLOWED_EXTENSIONS: List[str] = [".pdf", ".png", ".jpg", ".jpeg", ".docx", ".txt"]
     
     # SMTP / MailHog
-    SMTP_HOST: str = os.getenv("SMTP_HOST", "localhost")
-    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "1025"))
-    SMTP_USER: str = os.getenv("SMTP_USER", "")
-    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
-    EMAILS_FROM_EMAIL: str = os.getenv("EMAILS_FROM_EMAIL", "noreply@drishti.aicte.gov.in")
+    SMTP_HOST: str = "localhost"
+    SMTP_PORT: int = 1025
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    EMAILS_FROM_EMAIL: str = "noreply@drishti.aicte.gov.in"
     EMAILS_FROM_NAME: str = "Drishti AICTE Grievance System"
     ENABLE_EMAIL: bool = True
     
@@ -51,8 +62,17 @@ class Settings(BaseSettings):
     SLA_MEDIUM_DAYS: int = 7
     SLA_LOW_DAYS: int = 14
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, list):
+            return [origin.strip().rstrip("/") for origin in value if origin.strip()]
+        raw_value = value.strip()
+        if raw_value.startswith("["):
+            parsed = json.loads(raw_value)
+            if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+                raise ValueError("BACKEND_CORS_ORIGINS must be a JSON array or comma-separated origins")
+            return [origin.strip().rstrip("/") for origin in parsed if origin.strip()]
+        return [origin.strip().rstrip("/") for origin in raw_value.split(",") if origin.strip()]
 
 settings = Settings()

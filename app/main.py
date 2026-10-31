@@ -1,18 +1,18 @@
-import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import Base, engine, get_db, setup_audit_triggers
 from app.core.logging import logger
+from app.core.permissions import require_permission, validate_production_security
 from app.api import api_v1_router
 from app.services.sla import start_sla_scheduler, shutdown_sla_scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_production_security()
     # Startup: create tables and triggers
     logger.info("Initializing Drishti AICTE database schemas...")
     Base.metadata.create_all(bind=engine)
@@ -47,12 +47,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static file serving for evidence attachments
-os.makedirs(settings.STORAGE_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=settings.STORAGE_DIR), name="uploads")
-
 # Include Versioned API Routes (/api/v1)
 app.include_router(api_v1_router, prefix="/api")
+
+
+@app.middleware("http")
+async def apply_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'",
+    )
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
+
 
 @app.get("/health", tags=["Health & Monitoring"])
 def health_check(db: Session = Depends(get_db)):
@@ -60,8 +71,9 @@ def health_check(db: Session = Depends(get_db)):
     db_status = "healthy"
     try:
         db.execute(text("SELECT 1"))
-    except Exception as e:
-        db_status = f"unhealthy: {e}"
+    except Exception:
+        logger.exception("Health check could not reach the database")
+        db_status = "unhealthy"
         
     return {
         "status": "online",
@@ -71,7 +83,10 @@ def health_check(db: Session = Depends(get_db)):
     }
 
 @app.get("/metrics", tags=["Health & Monitoring"])
-def get_system_metrics(db: Session = Depends(get_db)):
+def get_system_metrics(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("admin.manage")),
+):
     """Basic Prometheus-compatible system metrics endpoint."""
     from app.models.complaint import Complaint, ComplaintStatus
     from app.models.user import User

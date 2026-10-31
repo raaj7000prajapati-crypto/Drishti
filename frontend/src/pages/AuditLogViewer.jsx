@@ -19,6 +19,8 @@ export default function AuditLogViewer() {
   const [actionFilter, setActionFilter] = useState('');
   const [entityFilter, setEntityFilter] = useState('');
   const [selectedLog, setSelectedLog] = useState(null);
+  const [verification, setVerification] = useState(null);
+  const [verifying, setVerifying] = useState(false);
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 25;
 
@@ -52,27 +54,73 @@ export default function AuditLogViewer() {
     }
   };
 
+  const verifyIntegrity = async () => {
+    setVerifying(true);
+    setVerification(null);
+    try {
+      const response = await adminAPI.verifyAuditLogChain();
+      setVerification(response.data);
+    } catch (err) {
+      setVerification({
+        valid: false,
+        reason: err.response?.data?.detail || 'Could not verify audit-log integrity.',
+      });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
       {/* Page Header */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700 uppercase tracking-widest">
-            <ShieldCheck className="w-4 h-4 text-emerald-600" /> Cryptographic Integrity & Legal Compliance
+            <ShieldCheck className="w-4 h-4 text-emerald-600" /> Hash-chain integrity
           </div>
           <h1 className="text-2xl font-extrabold text-slate-900 mt-1">
             Immutable Append-Only Audit Trail
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Enforced at the database trigger layer. Records who, what, when, IP address, and before/after states for all actions.
+            Database triggers prevent row updates and deletes. Hash verification detects changes to recorded audit entries.
           </p>
         </div>
 
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
-          <Lock className="w-3.5 h-3.5 text-emerald-600" />
-          <span>UPDATE / DELETE Revoked</span>
+        <div className="flex flex-col items-start sm:items-end gap-2">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
+            <Lock className="w-3.5 h-3.5 text-emerald-600" />
+            <span>UPDATE / DELETE Revoked</span>
+          </div>
+          <button
+            type="button"
+            onClick={verifyIntegrity}
+            disabled={verifying}
+            className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-700 disabled:opacity-50 text-white text-xs font-bold"
+          >
+            {verifying ? 'Verifying...' : 'Verify integrity'}
+          </button>
         </div>
       </div>
+
+      {verification && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-lg border p-3 text-xs ${
+            verification.valid
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : 'border-red-200 bg-red-50 text-red-900'
+          }`}
+        >
+          {verification.valid
+            ? `Integrity verified across ${verification.checked_entries} audit entries.`
+            : `${verification.reason} ${
+                verification.first_invalid_entry_id
+                  ? `First invalid entry: #${verification.first_invalid_entry_id}.`
+                  : ''
+              }`}
+        </div>
+      )}
 
       {/* Filter Toolbar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center gap-3 text-xs">

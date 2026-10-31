@@ -16,5 +16,7 @@ class AuditLog(Base):
     before_state = Column(Text, nullable=True)
     after_state = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    prev_hash = Column(String(64), nullable=True)
+    entry_hash = Column(String(64), nullable=True)
 
     actor = relationship("User")

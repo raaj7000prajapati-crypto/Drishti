@@ -12,6 +12,16 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const handleTokenRefresh = () => setToken(localStorage.getItem('drishti_token'));
+    const handleSessionExpired = () => {
+      localStorage.removeItem('drishti_token');
+      localStorage.removeItem('drishti_user');
+      setToken(null);
+      setUser(null);
+    };
+    window.addEventListener('drishti:token-refreshed', handleTokenRefresh);
+    window.addEventListener('drishti:session-expired', handleSessionExpired);
+
     const verifyAuth = async () => {
       const savedToken = localStorage.getItem('drishti_token');
       if (savedToken) {
@@ -19,20 +29,23 @@ export const AuthProvider = ({ children }) => {
           const res = await authAPI.getMe();
           setUser(res.data);
           localStorage.setItem('drishti_user', JSON.stringify(res.data));
-        } catch (err) {
-          logout();
+        } catch {
+          handleSessionExpired();
         }
       }
       setLoading(false);
     };
     verifyAuth();
+    return () => {
+      window.removeEventListener('drishti:token-refreshed', handleTokenRefresh);
+      window.removeEventListener('drishti:session-expired', handleSessionExpired);
+    };
   }, []);
 
   const login = async (email, password) => {
     const res = await authAPI.login({ email, password });
-    const { access_token, refresh_token, user: userData } = res.data;
+    const { access_token, user: userData } = res.data;
     localStorage.setItem('drishti_token', access_token);
-    localStorage.setItem('drishti_refresh', refresh_token);
     localStorage.setItem('drishti_user', JSON.stringify(userData));
     setToken(access_token);
     setUser(userData);
@@ -44,12 +57,21 @@ export const AuthProvider = ({ children }) => {
     return res.data;
   };
 
-  const logout = () => {
+  const clearSession = () => {
     localStorage.removeItem('drishti_token');
-    localStorage.removeItem('drishti_refresh');
     localStorage.removeItem('drishti_user');
     setToken(null);
     setUser(null);
+  };
+
+  const logout = async () => {
+    try {
+      await authAPI.logout();
+    } catch (error) {
+      console.error('Could not revoke the server refresh token during logout:', error);
+    } finally {
+      clearSession();
+    }
   };
 
   const refreshUser = async () => {

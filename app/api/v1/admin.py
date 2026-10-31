@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.database import get_db
-from app.api.deps import require_roles, get_client_ip
+from app.api.deps import get_client_ip
+from app.core.permissions import require_permission
 from app.core.security import get_password_hash
 from app.models.user import User, Role
 from app.models.bureau import Bureau
@@ -21,7 +22,7 @@ from app.services.audit import log_audit
 
 router = APIRouter(prefix="/admin", tags=["Admin Operations"])
 
-admin_only = require_roles([Role.ADMIN])
+admin_only = require_permission("admin.manage")
 
 # --- Users Management ---
 @router.get("/users", response_model=List[UserResponse])
@@ -159,9 +160,17 @@ def update_user(
 
 # --- Bureau Management ---
 @router.get("/bureaus", response_model=List[BureauResponse])
-def list_bureaus(db: Session = Depends(get_db)):
+def list_bureaus(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("bureau.read")),
+):
     """List all AICTE bureaus and cells with workload metrics."""
-    bureaus = db.query(Bureau).order_by(Bureau.id.asc()).all()
+    bureau_query = db.query(Bureau)
+    if current_user.role == Role.OFFICIAL:
+        if current_user.bureau_id is None:
+            return []
+        bureau_query = bureau_query.filter(Bureau.id == current_user.bureau_id)
+    bureaus = bureau_query.order_by(Bureau.id.asc()).all()
     resp = []
     for b in bureaus:
         official_count = db.query(func.count(User.id)).filter(User.bureau_id == b.id, User.is_active == True).scalar() or 0
@@ -431,3 +440,14 @@ def get_audit_logs(
 
     logs = query.order_by(AuditLog.created_at.desc()).offset(skip).limit(limit).all()
     return logs
+
+
+@router.get("/audit-logs/verify")
+def verify_audit_log_chain(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_only),
+):
+    """Verify every audit entry and return the first invalid entry, if any."""
+    from app.services.audit import verify_audit_chain
+
+    return verify_audit_chain(db)
