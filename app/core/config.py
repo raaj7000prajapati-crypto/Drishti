@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Database
     # If DATABASE_URL is not set, default to SQLite for quick local standalone run, or Postgres in Docker
     DATABASE_URL: str = "sqlite:///./drishti.db"
+    REDIS_URL: str = "redis://localhost:6379/0"
     
     # CORS
     BACKEND_CORS_ORIGINS: Annotated[List[str], NoDecode] = [

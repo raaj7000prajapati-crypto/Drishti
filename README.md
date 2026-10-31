@@ -18,6 +18,7 @@ flowchart LR
     Repositories --> ORM
     ORM --> DB[(SQLite for local development)]
     ORM --> PG[(PostgreSQL in Docker)]
+    API --> SharedState[(Redis shared login and dashboard state)]
     Services --> Scheduler[In-process APScheduler]
     Services --> SMTP[SMTP / MailHog]
     API --> Storage[Local upload storage]
@@ -60,6 +61,8 @@ are also joined into explicit case groups.
   refresh tokens in an httpOnly cookie; passwords are hashed with bcrypt
 - Data: SQLite for local development; PostgreSQL 16 in Docker Compose
 - Background work: in-process APScheduler for SLA checks
+- Shared state: Redis-backed login lockout and dashboard cache, with a
+  process-local fallback for development without Redis
 - Similarity: configurable TF-IDF/sentence-embedding hybrid with multilingual
   model selection, cached embeddings, and logged TF-IDF-only fallback
 - Tests: pytest and httpx
@@ -68,7 +71,7 @@ are also joined into explicit case groups.
 
 ### Docker
 
-Docker Compose starts PostgreSQL, MailHog, the backend, and the frontend:
+Docker Compose starts PostgreSQL, Redis, MailHog, the backend, and the frontend:
 
 ```powershell
 docker compose up --build
@@ -113,7 +116,10 @@ npm run dev
 
 The frontend is available at <http://localhost:5173>. Configure local settings
 through environment variables or a local `.env` file; never use prototype
-defaults for a deployed environment.
+defaults for a deployed environment. The backend uses `REDIS_URL` for shared
+login-lockout and dashboard-cache state. When Redis is not reachable in
+development, it falls back to process-local memory; production requests that
+need shared state return an explicit service-unavailable error instead.
 
 ## Demo accounts
 
@@ -146,12 +152,14 @@ local demonstrations only:
   supported SQLite and PostgreSQL deployments, with a SHA-256 hash chain and
   admin verification endpoint
 - Admin user, bureau, routing-rule, and SLA configuration operations
-- Analytics with a short-TTL dashboard aggregate cache, CSV/PDF report routes,
-  and JSON health/metrics endpoints
+- Analytics with a short-TTL shared dashboard aggregate cache, CSV/PDF report
+  routes, and JSON health/metrics endpoints
 
 These features have important limitations: some services still access
-SQLAlchemy directly instead of through repositories; login lockout and dashboard cache state are process-local;
-and the local performance smoke test is not a production capacity estimate. The
+SQLAlchemy directly instead of through repositories; the in-memory fallback
+for login lockout and dashboard cache is process-local when Redis is unavailable
+in development; and local performance smoke tests are not production capacity
+estimates. The
 84-pair synthetic evaluation includes TF-IDF, multilingual sentence-embedding,
 and hybrid measurements; it is not a production accuracy estimate. See
 [docs/AUDIT.md](./docs/AUDIT.md), [docs/PERFORMANCE.md](./docs/PERFORMANCE.md),

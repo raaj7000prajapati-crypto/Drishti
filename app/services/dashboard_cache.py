@@ -1,9 +1,13 @@
+import hashlib
+import json
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
+from app.core.logging import logger
+from app.core.shared_state import shared_state
 from app.schemas.analytics import DashboardStatsResponse
 
 
@@ -18,7 +22,25 @@ class DashboardStatsCache:
         self._key_locks: dict[tuple[Any, ...], threading.Lock] = {}
         self._key_lock_users: dict[tuple[Any, ...], int] = {}
 
+    @staticmethod
+    def _redis_key(key: tuple[Any, ...]) -> str:
+        serialized = json.dumps(key, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return f"drishti:analytics:dashboard:{digest}"
+
     def get(self, key: tuple[Any, ...]) -> DashboardStatsResponse | None:
+        redis_key = self._redis_key(key)
+        redis_used, payload = shared_state.get_dashboard_cache(redis_key)
+        if redis_used:
+            if payload is None:
+                return None
+            try:
+                return DashboardStatsResponse.model_validate_json(payload)
+            except ValueError:
+                logger.warning("Discarding invalid cached dashboard response.")
+                shared_state.delete_dashboard_cache(redis_key)
+                return None
+
         now = time.monotonic()
         with self._lock:
             entry = self._entries.get(key)
@@ -32,6 +54,14 @@ class DashboardStatsCache:
             return DashboardStatsResponse.model_validate(payload)
 
     def set(self, key: tuple[Any, ...], value: DashboardStatsResponse) -> None:
+        redis_key = self._redis_key(key)
+        if shared_state.set_dashboard_cache(
+            redis_key,
+            value.model_dump_json(),
+            self.ttl_seconds,
+        ):
+            return
+
         now = time.monotonic()
         with self._lock:
             expired_keys = [

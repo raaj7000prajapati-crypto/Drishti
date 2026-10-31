@@ -19,6 +19,19 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: drishti-redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   mailhog:
     image: mailhog/mailhog:latest
     container_name: drishti-mailhog
@@ -38,10 +51,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       mailhog:
         condition: service_started
     environment:
       - DATABASE_URL=postgresql+psycopg2://drishti:drishti123@db:5432/drishtidb
+      - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-drishti-aicte-super-secure-secret-key-sih-2026}
       - APP_ENV=${APP_ENV:-development}
       - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS:-http://localhost:80}
@@ -75,3 +91,4 @@ services:
 volumes:
   postgres_data:
   backend_uploads:
+  redis_data:

@@ -5,7 +5,13 @@ from threading import Lock
 import pytest
 
 from app.schemas.analytics import DashboardStatsResponse, SystemImpactMetrics
+from app.core.shared_state import shared_state
 from app.services.dashboard_cache import DashboardStatsCache
+
+
+@pytest.fixture(autouse=True)
+def clear_redis_connection(monkeypatch):
+    monkeypatch.setattr(shared_state, "_redis", None)
 
 
 def _dashboard_stats(total: int = 0) -> DashboardStatsResponse:
@@ -74,3 +80,28 @@ def test_dashboard_cache_releases_lock_after_compute_error():
         lambda: _dashboard_stats(total=3),
     )
     assert recovered.impact_metrics.total_complaints == 3
+
+
+def test_dashboard_cache_uses_redis_when_available(monkeypatch):
+    class RedisDouble:
+        values = {}
+
+        def get(self, key):
+            return self.values.get(key)
+
+        def set(self, key, value, ex):
+            self.values[key] = value
+            return True
+
+        def delete(self, key):
+            return self.values.pop(key, None) is not None
+
+    redis = RedisDouble()
+    monkeypatch.setattr(shared_state, "_redis", redis)
+    cache = DashboardStatsCache(ttl_seconds=10)
+    stats = _dashboard_stats(total=9)
+
+    cache.set(("ADMIN", 3), stats)
+
+    assert cache.get(("ADMIN", 3)).impact_metrics.total_complaints == 9
+    assert len(redis.values) == 1

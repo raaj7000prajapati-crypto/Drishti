@@ -1,8 +1,3 @@
-import time
-from collections import defaultdict, deque
-from threading import Lock
-from typing import Deque
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -14,6 +9,7 @@ from app.core.security import (
     create_access_token,
     decode_token,
 )
+from app.core.shared_state import shared_state
 from app.models.user import Role, User
 from app.schemas.user import Token, UserCreate, UserLogin, UserResponse
 from app.services.authentication import (
@@ -30,60 +26,44 @@ from app.services.authentication import (
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-_attempts_by_ip: dict[str, Deque[float]] = defaultdict(deque)
-_lockouts: dict[str, tuple[int, float]] = {}
-_login_state_lock = Lock()
 RATE_LIMIT_ATTEMPTS = 10
 RATE_LIMIT_WINDOW_SECONDS = 60
 
 
-def _lockout_key(email: str) -> str:
-    return email
-
-
 def check_login_rate_limit(client_ip: str, email: str) -> None:
-    now = time.monotonic()
-    key = _lockout_key(email)
-    with _login_state_lock:
-        failures, locked_until = _lockouts.get(key, (0, 0.0))
-        if locked_until > now:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many failed login attempts. Please try again later.",
-            )
-        if locked_until:
-            _lockouts.pop(key, None)
-
-        attempts = _attempts_by_ip[client_ip]
-        while attempts and now - attempts[0] >= RATE_LIMIT_WINDOW_SECONDS:
-            attempts.popleft()
-        if len(attempts) >= RATE_LIMIT_ATTEMPTS:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many login attempts. Please wait before trying again.",
-            )
-        attempts.append(now)
+    limit_reason = shared_state.check_login_rate_limit(
+        client_ip,
+        email,
+        window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        max_attempts_per_ip=RATE_LIMIT_ATTEMPTS,
+    )
+    if limit_reason == "account_locked":
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please try again later.",
+        )
+    if limit_reason == "ip_rate_limited":
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please wait before trying again.",
+        )
 
 
 def record_login_failure(email: str, client_ip: str) -> None:
-    key = _lockout_key(email)
-    now = time.monotonic()
-    with _login_state_lock:
-        failures, _ = _lockouts.get(key, (0, 0.0))
-        failures += 1
-        locked_until = 0.0
-        if failures >= settings.LOGIN_FAILURE_LIMIT:
-            locked_until = now + settings.LOGIN_LOCKOUT_MINUTES * 60
-            logger.warning(
-                "Login identity temporarily locked after repeated failures",
-                extra={"client_ip": client_ip, "email": email},
-            )
-        _lockouts[key] = (failures, locked_until)
+    failures = shared_state.record_login_failure(
+        email,
+        failure_limit=settings.LOGIN_FAILURE_LIMIT,
+        lockout_seconds=settings.LOGIN_LOCKOUT_MINUTES * 60,
+    )
+    if failures >= settings.LOGIN_FAILURE_LIMIT:
+        logger.warning(
+            "Login identity temporarily locked after repeated failures",
+            extra={"client_ip": client_ip, "email": email},
+        )
 
 
 def clear_login_failures(email: str) -> None:
-    with _login_state_lock:
-        _lockouts.pop(_lockout_key(email), None)
+    shared_state.clear_login_failures(email)
 
 
 def set_refresh_cookie(response: Response, token: str) -> None:

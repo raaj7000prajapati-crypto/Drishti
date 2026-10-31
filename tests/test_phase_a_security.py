@@ -170,8 +170,10 @@ def test_refresh_cookie_rotation_and_logout_revocation(client, db_session, secur
     assert first_record.revoked_at is not None
 
     second_payload = decode_token(second_token)
-    client.cookies.set("drishti_refresh", first_token, path="/api/v1/auth")
-    replay = client.post("/api/v1/auth/refresh")
+    replay = client.post(
+        "/api/v1/auth/refresh",
+        headers={"Cookie": f"drishti_refresh={first_token}"},
+    )
     assert replay.status_code == 401
     client.cookies.set("drishti_refresh", second_token, path="/api/v1/auth")
 
@@ -186,6 +188,7 @@ def test_refresh_cookie_rotation_and_logout_revocation(client, db_session, secur
 
 def test_refresh_cookie_secure_in_production(client, security_records, monkeypatch):
     monkeypatch.setattr(settings, "APP_ENV", "prod")
+    monkeypatch.setattr(auth.shared_state, "_redis_call", lambda _operation: (False, None))
     response = client.post(
         "/api/v1/auth/login",
         json={
@@ -197,10 +200,25 @@ def test_refresh_cookie_secure_in_production(client, security_records, monkeypat
     assert "secure" in response.headers["set-cookie"].lower()
 
 
+def test_shared_state_requires_redis_in_production(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.core.shared_state import SharedStateStore
+
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    store = SharedStateStore()
+    store._redis = None
+
+    with pytest.raises(HTTPException) as exc_info:
+        store.get_dashboard_cache("test-key")
+
+    assert exc_info.value.status_code == 503
+
+
 def test_login_temporarily_locks_after_repeated_failures(client, security_records):
-    auth._attempts_by_ip.clear()
-    auth._lockouts.clear()
-    headers = {"X-Forwarded-For": uuid.uuid4().hex}
+    client_ip = uuid.uuid4().hex
+    auth.shared_state.clear_login_state(security_records.owner.email, client_ip)
+    headers = {"X-Forwarded-For": client_ip}
     for _ in range(settings.LOGIN_FAILURE_LIMIT):
         response = client.post(
             "/api/v1/auth/login",
@@ -214,8 +232,7 @@ def test_login_temporarily_locks_after_repeated_failures(client, security_record
         headers={"X-Forwarded-For": uuid.uuid4().hex},
     )
     assert locked.status_code == 429
-    auth._attempts_by_ip.clear()
-    auth._lockouts.clear()
+    auth.shared_state.clear_login_state(security_records.owner.email, client_ip)
 
 
 def test_production_rejects_default_secret(monkeypatch):
@@ -278,7 +295,7 @@ def test_cors_origins_parse_comma_separated_and_json_values():
         ),
         ("owner", "POST", "respond", {"response": "Details"}),
         ("owner", "POST", "feedback", {"rating": 5}),
-        ("officer_a", "POST", "case-link", None),
+        ("outsider", "POST", "case-link", None),
     ],
 )
 def test_object_routes_deny_foreign_resources(
@@ -430,14 +447,20 @@ def test_officer_report_export_is_scoped_to_own_bureau(client, security_records)
     assert records.foreign_case.receipt_id not in response.text
 
 
-def test_officer_case_detail_hides_cross_bureau_link_records(client, security_records):
+def test_officer_case_detail_shows_link_summary_to_involved_bureau(
+    client, security_records
+):
     records = security_records
     response = client.get(
         f"/api/v1/complaints/{records.own_case.id}",
         headers=auth_headers(records.officer_a),
     )
     assert response.status_code == 200
-    assert response.json()["suggested_links"] == []
+    links = response.json()["suggested_links"]
+    assert len(links) == 1
+    assert links[0]["target_receipt_id"] == records.foreign_case.receipt_id
+    assert links[0]["target_subject"] == records.foreign_case.subject
+    assert links[0]["target_bureau_name"] == records.foreign_case.bureau.name
 
 
 def test_confirmed_cross_bureau_links_merge_case_groups(
