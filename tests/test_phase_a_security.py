@@ -453,6 +453,11 @@ def test_officer_dashboard_handles_sqlite_datetimes(client, security_records):
     )
     assert response.status_code == 200
     assert response.json()["impact_metrics"]["total_complaints"] == 1
+    data = response.json()
+    assert {bureau["bureau_id"] for bureau in data["cases_by_department"]} == {
+        security_records.own_case.bureau_id
+    }
+    assert all(role["role"] != Role.ADMIN.value for role in data["role_breakdown"])
 
 
 def test_upload_requires_matching_signature_and_uses_random_storage_name(tmp_path, monkeypatch):

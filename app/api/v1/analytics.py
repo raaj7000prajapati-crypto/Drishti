@@ -72,7 +72,10 @@ def get_dashboard_analytics(
 
     # 1. Cases by Department
     dept_stats: List[DepartmentStat] = []
-    bureaus = db.query(Bureau).filter(Bureau.is_active == True).all()
+    bureau_query = db.query(Bureau).filter(Bureau.is_active == True)
+    if current_user.role == Role.OFFICIAL and current_user.bureau_id is not None:
+        bureau_query = bureau_query.filter(Bureau.id == current_user.bureau_id)
+    bureaus = bureau_query.all()
     for b in bureaus:
         b_count = sum(1 for c in all_filtered_complaints if c.bureau_id == b.id)
         dept_stats.append(DepartmentStat(
@@ -124,7 +127,21 @@ def get_dashboard_analytics(
     ]
 
     # 4. Role Breakdown
-    roles_data = db.query(User.role, func.count(User.id)).group_by(User.role).all()
+    roles_query = db.query(User.role, func.count(User.id))
+    if current_user.role == Role.OFFICIAL:
+        if current_user.bureau_id is None:
+            roles_query = roles_query.filter(False)
+        else:
+            bureau_complainants = db.query(Complaint.complainant_id).filter(
+                Complaint.bureau_id == current_user.bureau_id
+            ).distinct()
+            roles_query = roles_query.filter(
+                or_(
+                    User.bureau_id == current_user.bureau_id,
+                    User.id.in_(bureau_complainants),
+                )
+            )
+    roles_data = roles_query.group_by(User.role).all()
     role_breakdown = [
         RoleStat(role=r[0].value if hasattr(r[0], "value") else str(r[0]), count=r[1])
         for r in roles_data
